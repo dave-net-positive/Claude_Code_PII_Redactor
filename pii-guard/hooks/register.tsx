@@ -6,6 +6,7 @@ import {
   removeType as removeTypeFrom, addTerm as addTermTo, removeTerm as removeTermFrom,
 } from './config'
 import { scan, redact, placeholderFor, MAX_SCAN } from './detect'
+import type { Numbering } from './detect'
 import { paneElements, renderReview, renderSettings } from './review'
 import type { PaneActions } from './review'
 
@@ -48,6 +49,45 @@ const redactAll = (findings: Finding[]): Record<string, Decision> =>
   Object.fromEntries(findings.map(f => [f.typeId, 'redact' as const]))
 
 const typeList = (findings: Finding[]) => [...new Set(findings.map(f => f.typeId))].join(', ')
+
+type PendingFile = { findings: Finding[]; decisions: Record<string, Decision>; numbering: Numbering; ph: (id: string) => string }
+/** Redactions agreed for @mentioned files, applied when their attachment is raised. */
+const pendingFiles = new Map<string, PendingFile>()
+
+const MENTION_RE = /(?<![\w@])@((?:"[^"\n]+")|(?:[^\s"'`,;:!?()[\]{}<>]+))/g
+
+async function mentionedFiles($: EngineInterface, text: string): Promise<{ path: string; text: string }[]> {
+  const out: { path: string; text: string }[] = []
+  const seen = new Set<string>()
+  for (const m of text.matchAll(MENTION_RE)) {
+    let raw = m[1]!.replace(/^"|"$/g, '')
+    raw = raw.replace(/#L\d+(?:-\d+)?$/, '')
+    if (!raw || seen.has(raw)) continue
+    seen.add(raw)
+    try {
+      const st = await $.fs.stat(raw)
+      if (st.kind !== 'file' || st.size > 4 * 1024 * 1024) continue
+      const body = await $.fs.read(raw)
+      if (typeof body === 'string') out.push({ path: raw, text: body })
+    } catch { /* missing, a directory, denied: skip */ }
+  }
+  return out
+}
+
+/** Re-locate agreed findings by value: the engine frames file text, so stored offsets do not hold. */
+function relocate(text: string, findings: Finding[]): Finding[] {
+  const out: Finding[] = []
+  for (const f of findings) {
+    let from = 0
+    for (;;) {
+      const at = text.indexOf(f.value, from)
+      if (at < 0) break
+      out.push({ ...f, start: at, end: at + f.value.length })
+      from = at + f.value.length
+    }
+  }
+  return out.sort((a, b) => a.start - b.start)
+}
 
 /** Shows the review pane, waits for Send / Cancel / close, applies session allows. */
 async function runReview($: EngineInterface, review: Review): Promise<{ outcome: Outcome; decisions: Record<string, Decision> }> {
@@ -119,18 +159,35 @@ export const register: Register = on => {
   on('prompt.submit', async ($, e, next) => {
     if (e.origin.kind === 'plugin') return next(e)
     if (/^\s*\//.test(e.text)) return next(e)
+    pendingFiles.clear()
     try {
       const config = await loadConfig($)
       const sessionAllows = await read($, sessionAllowsAtom)
       const sections: ReviewSection[] = [sectionOf('prompt', 'Prompt', e.text)]
       const findings: Finding[] = scan(e.text, 'prompt', config, { sessionAllows })
+      const files = await mentionedFiles($, e.text)
+      const fileFindings = new Map<string, Finding[]>()
+      for (const f of files) {
+        const id = `file:${f.path}`
+        sections.push(sectionOf(id, `@${f.path}`, f.text))
+        const found = scan(f.text, id, config, { sessionAllows })
+        fileFindings.set(f.path, found)
+        findings.push(...found)
+      }
       const unscannable: Unscannable[] = (e.attachments ?? []).map(a => ({ filename: a.filename, type: a.type, mediaType: a.mediaType }))
       if (findings.length === 0 && unscannable.length === 0) return next(e)
 
       const ph = (id: string) => placeholderFor(config, id)
       const promptFindings = findings.filter(f => f.section === 'prompt')
+      const queueFiles = (decisions: Record<string, Decision>, numbering: Numbering) => {
+        for (const [path, found] of fileFindings) {
+          if (found.length) pendingFiles.set(path, { findings: found, decisions, numbering, ph })
+        }
+      }
       if (e.origin.kind === 'sdk') {
-        const r = redact(e.text, promptFindings, redactAll(findings), {}, ph)
+        const all = redactAll(findings)
+        const r = redact(e.text, promptFindings, all, {}, ph)
+        queueFiles(all, r.numbering)
         $.ui.log(`pii-guard: headless run, redacted ${r.count} value(s) of ${typeList(findings)}`, { to: 'debug' })
         return next({ ...e, text: r.text })
       }
@@ -141,6 +198,7 @@ export const register: Register = on => {
         return { drop: 'Cancelled in PII review' }
       }
       const r = redact(e.text, promptFindings, decisions, {}, ph)
+      queueFiles(decisions, r.numbering)
       if (r.count) $.ui.toast(`pii-guard redacted ${r.count} value(s)`)
       return next({ ...e, text: r.text })
     } catch (err) {
@@ -149,6 +207,17 @@ export const register: Register = on => {
       return { drop: 'pii-guard failed; prompt held' }
     }
   }).catch(($, e, next) => (next.called ? next(e) : { drop: 'pii-guard failed; prompt held' }))
+
+  on('prompt.attachment', { type: 'file' }, async ($, e, next) => {
+    if (e.agentId || pendingFiles.size === 0) return next(e)
+    for (const [path, entry] of pendingFiles) {
+      if (!e.text.includes(path)) continue
+      pendingFiles.delete(path)
+      const r = redact(e.text, relocate(e.text, entry.findings), entry.decisions, entry.numbering, entry.ph)
+      return next({ ...e, text: r.text })
+    }
+    return next(e)
+  })
 
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) => {
     const E = paneElements($.ui.resolve(e))

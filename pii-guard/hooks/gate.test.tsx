@@ -99,3 +99,61 @@ test('a failure while opening the pane fails closed', async ($, on) => {
   const r = await $.prompt.submit(submit('a@b.co'))
   expect('drop' in r && typeof r.drop === 'string').toBe(true)
 })
+
+test('mentioned file is scanned, shown, and redacted at attachment time', async ($, on) => {
+  mock.store(on)
+  let signal!: () => void
+  const opened = new Promise<void>(r => { signal = r })
+  on('ui.open', () => { signal(); return { value: { isPlaced: true as const } } })
+  on('ui.close', () => ({ value: undefined })); on('ui.toast', () => ({ value: undefined })); on('ui.log', () => ({ value: undefined }))
+  on('fs.stat', ($, e) => {
+    if (e.path.endsWith('notes.md')) return { value: { kind: 'file' as const, size: 10, mtimeMs: 0, isLink: false } }
+    throw new Error('ENOENT')
+  })
+  on('fs.read', ($, e) => {
+    if (e.path.endsWith('notes.md')) return { value: 'contact joanna@example.com now' }
+    throw new Error('ENOENT')
+  })
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  on('prompt.attachment', ($, e) => ({ text: e.text }))
+
+  const run = $.prompt.submit(submit('summarise @notes.md please'))
+  await opened
+  const ui = await $.ui.mount({ plugin: 'pii-guard', surface: 'terminal', component: 'Pane', requestId: 'pii-guard', props: paneProps })
+  expect(await ui.find({ text: /@notes\.md/ })).toBeTruthy()
+  expect(await ui.find({ text: /1 finding in 2 sections/ })).toBeTruthy()
+  await ui.press({ key: 'send' })
+  expect(await run).toEqual({ text: 'summarise @notes.md please' })
+
+  const framed = 'Called the Read tool with the following input: {"file_path":"notes.md"}\n\nResult of calling the Read tool:\ncontact joanna@example.com now'
+  const att = await $.prompt.attachment({ type: 'file', text: framed, origin: { kind: 'engine' } } as never)
+  expect(att).toEqual({ text: framed.replace('joanna@example.com', '[EMAIL_1]') })
+
+  const again = await $.prompt.attachment({ type: 'file', text: framed, origin: { kind: 'engine' } } as never)
+  expect(again).toEqual({ text: framed })
+})
+
+test('a cancelled review leaves no pending file redactions', async ($, on) => {
+  mock.store(on)
+  let signal!: () => void
+  const opened = new Promise<void>(r => { signal = r })
+  on('ui.open', () => { signal(); return { value: { isPlaced: true as const } } })
+  on('ui.close', () => ({ value: undefined })); on('ui.toast', () => ({ value: undefined })); on('ui.log', () => ({ value: undefined }))
+  on('fs.stat', () => ({ value: { kind: 'file' as const, size: 10, mtimeMs: 0, isLink: false } }))
+  on('fs.read', () => ({ value: 'a@b.co' }))
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  on('prompt.attachment', ($, e) => ({ text: e.text }))
+  const run = $.prompt.submit(submit('see @x.txt'))
+  await opened
+  const ui = await $.ui.mount({ plugin: 'pii-guard', surface: 'terminal', component: 'Pane', requestId: 'pii-guard', props: paneProps })
+  await ui.press({ key: 'cancel' })
+  expect(await run).toEqual({ drop: 'Cancelled in PII review' })
+  const att = await $.prompt.attachment({ type: 'file', text: 'x.txt\na@b.co', origin: { kind: 'engine' } } as never)
+  expect(att).toEqual({ text: 'x.txt\na@b.co' })
+})
+
+test('skips unreadable mentions and directories', async ($, on) => {
+  mock.store(on); stub(on)
+  const r = await $.prompt.submit(submit('look at @missing.txt and @src/'))
+  expect(r).toEqual({ text: 'look at @missing.txt and @src/' })
+})
