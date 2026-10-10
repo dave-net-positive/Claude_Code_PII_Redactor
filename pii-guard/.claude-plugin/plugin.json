@@ -6,5 +6,6 @@
     "name": "dave-net-positive",
     "email": "dave@net-positive.uk"
   },
+  "license": "MIT",
   "types": "./types/index.d.ts"
 }

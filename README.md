@@ -116,6 +116,6 @@ claude plugin test pii-guard
 /plugin uninstall pii-guard
 ```
 
-## Author
+## Licence and author
 
-Dave Wilbourn, [net-positive.uk](https://net-positive.uk). Issues and pattern suggestions welcome on GitHub. No licence file yet; ask before redistributing.
+MIT, see [LICENSE](LICENSE). Dave Wilbourn, [net-positive.uk](https://net-positive.uk). Issues and pattern suggestions welcome on GitHub.
