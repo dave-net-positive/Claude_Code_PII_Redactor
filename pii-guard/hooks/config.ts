@@ -1,13 +1,8 @@
-import type { EngineInterface } from 'claude-code'
 import type { Config, PiiType } from '../types'
 import { BUILTIN_TYPES, DEFAULT_ALLOWLIST } from './patterns'
 import { compilePattern } from './detect'
 
 export const STORE_KEY = 'config'
-const configVersion = { plugin: 'pii-guard', key: 'configVersion' } as const
-
-/** The part of `$` the config layer touches; narrow so tests can hand in a fake. */
-export type ConfigHost = Pick<EngineInterface, 'store' | 'state'>
 
 export function defaultConfig(): Config {
   return {
@@ -63,16 +58,6 @@ export function mergeBuiltins(stored: unknown): Config {
     allowlist: 'allowlist' in stored ? strings(stored.allowlist) : base.allowlist,
     scanToolReads: stored.scanToolReads === true,
   }
-}
-
-export async function loadConfig($: ConfigHost): Promise<Config> {
-  return mergeBuiltins(await $.store.get(STORE_KEY))
-}
-
-export async function saveConfig($: ConfigHost, config: Config): Promise<void> {
-  await $.store.set(STORE_KEY, config)
-  const { value = 0 } = await $.state.get(configVersion)
-  await $.state.set(configVersion, value + 1)
 }
 
 type Outcome = { ok: true; config: Config } | { ok: false; reason: string }

@@ -1,35 +1,6 @@
 import { test, expect } from 'claude-code/testing'
 import { BUILTIN_TYPES } from './patterns'
-import type { ConfigHost } from './config'
-import { defaultConfig, mergeBuiltins, loadConfig, saveConfig, addCustomType, removeType, setEnabled, addTerm, removeTerm, STORE_KEY } from './config'
-
-/** An in-memory stand-in for $.store and $.state, since a test's $ has neither noun. */
-function fakeHost(): ConfigHost & { stored: Map<string, unknown> } {
-  const stored = new Map<string, unknown>()
-  const state = new Map<string, { value: unknown; version: number }>()
-  const key = (ref: { plugin: string; key: string }) => `${ref.plugin}/${ref.key}`
-  return {
-    stored,
-    store: {
-      get: async k => stored.get(k),
-      set: async (k, v) => { stored.set(k, JSON.parse(JSON.stringify(v))) },
-      delete: async k => { stored.delete(k) },
-      keys: async () => [...stored.keys()],
-    },
-    state: {
-      get: (async (ref: { plugin: string; key: string }) => {
-        const held = state.get(key(ref))
-        return held ? { value: held.value, version: held.version } : { value: undefined, version: 0 }
-      }) as ConfigHost['state']['get'],
-      set: (async (ref: { plugin: string; key: string }, value: unknown) => {
-        const held = state.get(key(ref))
-        const version = (held?.version ?? 0) + 1
-        state.set(key(ref), { value, version })
-        return { isSet: true, version }
-      }) as ConfigHost['state']['set'],
-    },
-  }
-}
+import { defaultConfig, mergeBuiltins, addCustomType, removeType, setEnabled, addTerm, removeTerm } from './config'
 
 test('defaultConfig has every built-in enabled and the default allowlist', async () => {
   const c = defaultConfig()
@@ -62,17 +33,6 @@ test('mergeBuiltins keeps stored toggles and custom types, adds new built-ins', 
 test('mergeBuiltins tolerates garbage', async () => {
   expect(mergeBuiltins(undefined).types.length).toBe(BUILTIN_TYPES.length)
   expect(mergeBuiltins({ types: 'nope' }).types.length).toBe(BUILTIN_TYPES.length)
-})
-
-test('loadConfig and saveConfig round-trip through the store and bump configVersion', async () => {
-  const host = fakeHost()
-  const c = await loadConfig(host)
-  const c2 = addTerm(c, 'watchlist', 'Joanna')
-  await saveConfig(host, c2)
-  const back = await loadConfig(host)
-  expect(back.watchlist).toEqual(['Joanna'])
-  expect(host.stored.get(STORE_KEY)).toBeTruthy()
-  expect((await host.state.get({ plugin: 'pii-guard', key: 'configVersion' })).value).toBe(1)
 })
 
 test('addCustomType validates and prefixes the id', async () => {
