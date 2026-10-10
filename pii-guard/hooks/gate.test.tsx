@@ -19,7 +19,7 @@ type Submitted = { text: string; origin: unknown; context?: readonly string[] }
  * the engine's AskUserQuestion dialog with the label `answer()` returns.
  */
 type FsStub = { stat?: (path: string) => { kind: 'file' | 'dir' | 'other'; size: number; mtimeMs: number; isLink: boolean }; read?: (path: string) => string }
-function stub(on: On, over: { open?: () => never; answer?: (options: string[]) => string; fs?: FsStub } = {}) {
+function stub(on: On, over: { open?: () => never; answer?: (options: string[]) => string; fs?: FsStub; surfaces?: readonly ('terminal' | 'desktop')[] } = {}) {
   const log: string[] = []
   const submitted: Submitted[] = []
   let opens = 0
@@ -34,6 +34,7 @@ function stub(on: On, over: { open?: () => never; answer?: (options: string[]) =
   on('fs.stat', ($, e) => { if (over.fs?.stat) return { value: over.fs.stat(e.path) }; throw new Error('ENOENT') })
   on('fs.read', ($, e) => { if (over.fs?.read) return { value: over.fs.read(e.path) }; throw new Error('ENOENT') })
   on('command.list', () => ({ value: [{ name: 'pii', description: '', source: 'plugin' as never }] }))
+  on('session.surfaces', () => ({ value: over.surfaces ?? ['terminal'] }))
   on('prompt.submit', ($, e) => { submitted.push({ text: e.text, origin: e.origin, context: e.context }); return { text: e.text } })
   on('prompt.compose', () => ({ sections: [{ id: 'core', text: 'base', scope: 'shared' as const }] }))
   on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
@@ -129,13 +130,19 @@ test('only a registered slash command skips the scan', async ($, on) => {
   expect(await $.prompt.submit(submit('/var/log/app.log shows john@x.com failing'))).toEqual(HELD)
 })
 
-test('a non-interactive session redacts everything inline, logging counts only', async ($, on) => {
-  mock.store(on); const { log } = stub(on)
-  on('tool.register', () => ({ value: { tool: 'x' } })); on('command.register', () => ({ value: { command: 'pii' } })); on('session.start', ($, e) => ({ cwd: e.cwd }))
-  await $.session.start({ cwd: 'E:/x', surface: null, isInteractive: false })
+test('a session with no surface redacts everything inline, logging counts only', async ($, on) => {
+  mock.store(on); const { log } = stub(on, { surfaces: [] })
   const r = await $.prompt.submit(submit('a@b.co'))
   expect(r).toEqual({ text: '[EMAIL_1]' })
   expect(log.some(l => l.startsWith('log:pii-guard: non-interactive') && !l.includes('a@b.co'))).toBe(true)
+})
+
+test('a desktop-hosted session (isInteractive false, a desktop surface attached) gets the pane', async ($, on) => {
+  mock.store(on); const { opens } = stub(on, { surfaces: ['desktop'] })
+  on('tool.register', () => ({ value: { tool: 'x' } })); on('command.register', () => ({ value: { command: 'pii' } })); on('session.start', ($, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: 'E:/x', surface: null, isInteractive: false })
+  expect(await $.prompt.submit(submit('a@b.co'))).toEqual(HELD)
+  expect(opens()).toBe(1)
 })
 
 test('a failure while opening the pane fails closed', async ($, on) => {

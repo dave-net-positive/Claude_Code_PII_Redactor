@@ -19,7 +19,7 @@ Files you mentioned with `@path` are shown as their own sections and, on Send, a
 
 A prompt that carries an image, PDF or audio attachment cannot be resubmitted with the attachment, so it is decided in Claude Code's own question dialog instead: redact the text and send, send everything as-is, or cancel. The pane still shows what was found.
 
-In a non-interactive run (`claude -p`) there is nobody to ask, so everything flagged is redacted and the run continues. If the mod itself fails, the prompt is held rather than sent.
+Where nothing draws (a `claude -p` run) there is nobody to ask, so everything flagged is redacted and the run continues. The desktop app counts as interactive once its window is attached. If the mod itself fails, the prompt is held rather than sent.
 
 ### Read tool results (opt-in)
 

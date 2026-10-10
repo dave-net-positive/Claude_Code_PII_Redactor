@@ -35,9 +35,6 @@ async function saveConfig($: EngineInterface, config: Config): Promise<void> {
   await $.state.set(configVersion, value + 1)
 }
 
-/** Whether somebody is at a keyboard; set by session.start, true until it says otherwise. */
-let interactive = true
-
 /** Set once anything was redacted this session: the model then gets a standing note about placeholders. */
 let everRedacted = false
 
@@ -185,7 +182,6 @@ function actionsFor($: EngineInterface): PaneActions {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    interactive = e.isInteractive
     await $.command.register({
       name: 'pii',
       description: 'PII guard: settings, patterns, watchlist and allowlist',
@@ -261,7 +257,9 @@ export const register: Register = on => {
         return next({ ...e, text: r.text, context: r.count ? [...(e.context ?? []), PLACEHOLDER_NOTE] : e.context })
       }
 
-      if (!interactive) {
+      // Nobody can answer where nothing draws (a -p run). The desktop app is SDK-hosted
+      // and reports isInteractive=false, so the surfaces attached now are the test.
+      if ((await $.session.surfaces()).length === 0) {
         $.ui.log(`pii-guard: non-interactive session, redacted ${promptFindings.length} value(s) of ${typeList(findings)}`, { to: 'debug' })
         return redactEverything()
       }

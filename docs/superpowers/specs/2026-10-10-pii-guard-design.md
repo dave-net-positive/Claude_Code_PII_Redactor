@@ -411,7 +411,7 @@ Found during implementation and the final review; the code is the authority wher
 2. **Attachments present: the engine dialog decides.** A resubmit cannot carry images, PDFs or audio, so such prompts are decided with `$.ui.ask` (a `$` call, budget-safe): redact text and send, send as-is, or cancel. The pane shows the findings alongside.
 3. **Read gate decides in the dialog, all types at once.** `$.ui.ask` with Redact / Allow once / Allow this session / Withhold; the pane shows the hit. Any failure after the read ran withholds the result.
 4. **File attachments are rescanned, never matched by path.** Every main-loop `file` attachment is rescanned and redacted with the last sent prompt's decisions (default redact), with a toast when anything was redacted.
-5. **Headless detection** uses `session.start`'s `isInteractive`, not the prompt origin.
+5. **Headless detection** asks `$.session.surfaces()` at prompt time: empty means nobody can answer. The desktop app is SDK-hosted (`isInteractive` false, no surface at start) and attaches its surface later, so neither the origin kind nor the start-time flag is usable.
 6. **Slash-command skip** applies only when the first token names a registered command (`$.command.list()`).
 7. **`pii_patterns` can only strengthen the guard**: list (counts, never entries), test, add, watch, enable. Weakening actions are `/pii` only. Subagent calls are refused.
 8. **ReDoS lint** is a small parser: an unbounded repeated group that contains a variable-width quantifier or an alternation is refused; bounded repeats are allowed.
