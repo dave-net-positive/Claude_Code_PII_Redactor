@@ -201,3 +201,54 @@ test('session-allowed type is listed in settings and revoke re-arms it', async (
   await ui.press({ key: 'cancel' })
   expect(await run2).toEqual({ drop: 'Cancelled in PII review' })
 })
+
+const readRecord = (content: string) => ({
+  ref: 1, text: content, isReadOnly: true as const,
+  result: { type: 'text' as const, file: { filePath: 'C:/x/a.txt', content, numLines: 1, startLine: 1, totalLines: 1 } },
+})
+const readsOn = { config: { version: 1, types: [], watchlist: [], allowlist: [], scanToolReads: true } }
+
+test('Read scanning is off by default', async ($, on) => {
+  mock.store(on); stub(on)
+  on('tool.call', { tool: 'Read' }, () => readRecord('NI AB 12 34 56 C') as never)
+  const r = await $.tool.call({ tool: 'Read', file_path: 'C:/x/a.txt' })
+  expect('text' in r && r.text).toBe('NI AB 12 34 56 C')
+})
+
+test('with reads on, a hit opens the review and send redacts the record', async ($, on) => {
+  mock.store(on, readsOn); const { opened } = stub(on)
+  on('tool.call', { tool: 'Read' }, () => readRecord('NI AB 12 34 56 C') as never)
+  const run = $.tool.call({ tool: 'Read', file_path: 'C:/x/a.txt' })
+  await opened
+  const ui = await $.ui.mount({ plugin: 'pii-guard', surface: 'terminal', component: 'Pane', requestId: 'pii-guard', props: paneProps })
+  expect(await ui.find({ text: /Read C:\/x\/a\.txt/ })).toBeTruthy()
+  await ui.press({ key: 'send' })
+  const r = await run
+  expect('result' in r && (r.result as { file: { content: string } }).file.content).toBe('NI [NINO_1]')
+  expect('context' in r && r.context?.[0]).toMatch(/redacted 1 value/)
+})
+
+test('cancel withholds the Read result', async ($, on) => {
+  mock.store(on, readsOn); const { opened } = stub(on)
+  on('tool.call', { tool: 'Read' }, () => readRecord('a@b.co') as never)
+  const run = $.tool.call({ tool: 'Read', file_path: 'C:/x/a.txt' })
+  await opened
+  const ui = await $.ui.mount({ plugin: 'pii-guard', surface: 'terminal', component: 'Pane', requestId: 'pii-guard', props: paneProps })
+  await ui.press({ key: 'cancel' })
+  const r = await run
+  expect('deny' in r && r.deny).toMatch(/withheld/)
+})
+
+test('a clean Read passes untouched with reads on', async ($, on) => {
+  mock.store(on, readsOn); stub(on)
+  on('tool.call', { tool: 'Read' }, () => readRecord('nothing here') as never)
+  const r = await $.tool.call({ tool: 'Read', file_path: 'C:/x/a.txt' })
+  expect('text' in r && r.text).toBe('nothing here')
+})
+
+test('subagent Reads are not gated', async ($, on) => {
+  mock.store(on, readsOn); stub(on)
+  on('tool.call', { tool: 'Read' }, () => readRecord('a@b.co') as never)
+  const r = await $.tool.call({ tool: 'Read', file_path: 'C:/x/a.txt', agentId: 'sub-1' } as never)
+  expect('text' in r && r.text).toBe('a@b.co')
+})

@@ -215,6 +215,30 @@ export const register: Register = on => {
     }
   }).catch(($, e, next) => (next.called ? next(e) : { drop: 'pii-guard failed; prompt held' }))
 
+  on('tool.call', { tool: 'Read' }, async ($, e, next) => {
+    const ran = await next(e)
+    if (ran.deny !== undefined || ran.isError || e.agentId) return ran
+    const config = await loadConfig($)
+    if (!config.scanToolReads) return ran
+    const record = ran.result as { type?: string; file?: { content?: string } } | undefined
+    const content = record?.type === 'text' && typeof record.file?.content === 'string' ? record.file.content : undefined
+    if (content === undefined) return ran
+    const sessionAllows = await read($, sessionAllowsAtom)
+    const sectionId = `tool:${e.tool_use_id ?? 'read'}`
+    const findings = scan(content, sectionId, config, { sessionAllows })
+    if (findings.length === 0) return ran
+    const review = buildReview('tool', [sectionOf(sectionId, `Read ${e.file_path}`, content)], findings, [])
+    const { outcome, decisions } = await runReview($, review)
+    if (outcome === 'cancel') return { deny: 'Read result withheld in PII review' }
+    const r = redact(content, findings, decisions, {}, id => placeholderFor(config, id))
+    if (r.count === 0) return ran
+    const file = (ran.result as { file: Record<string, unknown> }).file
+    return {
+      result: { ...(ran.result as object), file: { ...file, content: r.text } } as typeof ran.result,
+      context: [`pii-guard redacted ${r.count} value(s) in this file before you read it. Placeholders like [NINO_1] stand for real values; do not try to reconstruct them.`],
+    }
+  }).catch(($, e, next) => (next.called ? next(e) : { deny: 'pii-guard failed; Read withheld' }))
+
   // Every main-loop file attachment is rescanned with the current config; the
   // decisions are the ones the prompt's review agreed, redact for anything else.
   on('prompt.attachment', { type: 'file' }, async ($, e, next) => {
