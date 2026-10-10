@@ -10,11 +10,12 @@ const paneProps = {
   view: {},
 }
 
-/** Bottom hooks for what the gate calls on `$`; `opened` resolves once the pane was asked for. */
+/** Bottom hooks for what the gate calls on `$`; `opened` resolves once the pane was asked for, `nextOpen()` re-arms it. */
 function stub(on: On, over: { open?: () => never } = {}) {
   const log: string[] = []
   let signal!: () => void
-  const opened = new Promise<void>(r => { signal = r })
+  const arm = () => new Promise<void>(r => { signal = r })
+  const opened = arm()
   on('ui.open', () => {
     if (over.open) over.open()
     signal()
@@ -25,7 +26,7 @@ function stub(on: On, over: { open?: () => never } = {}) {
   on('ui.log', ($, e) => { log.push(`log:${e.text}`); return { value: undefined } })
   on('fs.stat', () => { throw new Error('ENOENT') })
   on('prompt.submit', ($, e) => ({ text: e.text }))
-  return { log, opened }
+  return { log, opened, nextOpen: arm }
 }
 
 const submit = (text: string, extra: Record<string, unknown> = {}) =>
@@ -156,4 +157,38 @@ test('skips unreadable mentions and directories', async ($, on) => {
   mock.store(on); stub(on)
   const r = await $.prompt.submit(submit('look at @missing.txt and @src/'))
   expect(r).toEqual({ text: 'look at @missing.txt and @src/' })
+})
+
+test('allow this session: a later prompt with only that type passes silently', async ($, on) => {
+  mock.store(on); const { log, opened } = stub(on)
+  const run = $.prompt.submit(submit('a@b.co'))
+  await opened
+  const ui = await $.ui.mount({ plugin: 'pii-guard', surface: 'terminal', component: 'Pane', requestId: 'pii-guard', props: paneProps })
+  await ui.press({ key: 'decide:email:allow-session' })
+  await ui.press({ key: 'send' })
+  expect(await run).toEqual({ text: 'a@b.co' })
+  const toastsBefore = log.filter(l => l.startsWith('toast:')).length
+  const second = await $.prompt.submit(submit('again c@d.co'))
+  expect(second).toEqual({ text: 'again c@d.co' })
+  expect(log.filter(l => l.startsWith('toast:')).length).toBe(toastsBefore)
+})
+
+test('session-allowed type is listed in settings and revoke re-arms it', async ($, on) => {
+  mock.store(on); const { opened, nextOpen } = stub(on)
+  const run = $.prompt.submit(submit('a@b.co'))
+  await opened
+  const ui = await $.ui.mount({ plugin: 'pii-guard', surface: 'terminal', component: 'Pane', requestId: 'pii-guard', props: paneProps })
+  await ui.press({ key: 'decide:email:allow-session' })
+  await ui.press({ key: 'send' })
+  await run
+  // No review pending now, so the same mounted pane redraws as settings.
+  expect(await ui.find({ key: 'revoke:email' })).toBeTruthy()
+  await ui.press({ key: 'revoke:email' })
+  expect(await ui.find({ key: 'revoke:email' })).toBeFalsy()
+  const reopened = nextOpen()
+  const run2 = $.prompt.submit(submit('c@d.co'))
+  await reopened
+  expect(await ui.find({ key: 'cancel' })).toBeTruthy()
+  await ui.press({ key: 'cancel' })
+  expect(await run2).toEqual({ drop: 'Cancelled in PII review' })
 })
