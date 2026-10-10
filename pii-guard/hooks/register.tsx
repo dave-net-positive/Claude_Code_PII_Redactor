@@ -7,6 +7,7 @@ import {
 } from './config'
 import { scan, redact, placeholderFor, MAX_SCAN } from './detect'
 import type { Numbering } from './detect'
+import { runPiiCommand } from './command'
 import { paneElements, renderReview, renderSettings } from './review'
 import type { PaneActions } from './review'
 
@@ -149,7 +150,25 @@ function actionsFor($: EngineInterface): PaneActions {
 }
 
 export const register: Register = on => {
-  on('session.start', async ($, e, next) => next(e))
+  on('session.start', async ($, e, next) => {
+    await $.command.register({
+      name: 'pii',
+      description: 'PII guard: settings, patterns, watchlist and allowlist',
+      argumentHint: '[list|on|off|add|rm|watch|unwatch|allow|unallow|test|reads]',
+    })
+    return next(e)
+  })
+
+  on('command.run', { command: 'pii' }, async ($, e) => {
+    const outcome = runPiiCommand(await loadConfig($), e.args)
+    if (outcome.config) await saveConfig($, outcome.config)
+    if (outcome.openSettings) {
+      await update($, settingsOpenAtom, () => true)
+      await $.ui.open({ id: PANE_ID, title: 'PII settings', focus: true, closeOnEscape: true })
+      return { text: 'PII guard settings opened.' }
+    }
+    return { text: outcome.text }
+  })
 
   on('ui.close', { id: PANE_ID }, async ($, e, next) => {
     if (e.origin.kind === 'person' && pending) settle('cancel')
