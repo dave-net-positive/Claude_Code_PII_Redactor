@@ -1,15 +1,15 @@
 import type { ToolSpec } from 'claude-code'
 import type { Config } from '../types'
-import { addCustomType, removeType, setEnabled, addTerm, removeTerm } from './config'
+import { addCustomType, setEnabled, addTerm } from './config'
 import { testPattern } from './detect'
 
 export const TOOL_SPEC: ToolSpec = {
   name: 'pii_patterns',
   description: [
-    'Manage pii-guard, the PII review gate. Actions: list (types, watchlist, allowlist),',
+    'Manage pii-guard, the PII review gate. Actions: list (types with on/off, list sizes),',
     'test (run a regex or a saved type id against sample strings; returns which substrings matched per sample),',
-    'add (save a custom regex type), remove (delete a custom type), toggle (enable/disable a type),',
-    'watch/unwatch (names watchlist), allow/unallow (false-positive allowlist).',
+    'add (save a custom regex type), watch (add a name to the watchlist), toggle with enabled=true (turn a type on).',
+    'Anything that weakens the guard (turning a type off, removing a type, allowlisting, unwatching) is only available to the person through /pii.',
     'Before add: run test with 3+ positive and 3+ negative samples and show the user the result.',
     'Regexes get flags giu; nested quantifiers and patterns matching the empty string are rejected.',
     'Never put real PII values in samples; use fakes of the right shape.',
@@ -17,14 +17,14 @@ export const TOOL_SPEC: ToolSpec = {
   inputSchema: {
     type: 'object',
     properties: {
-      action: { type: 'string', enum: ['list', 'test', 'add', 'remove', 'toggle', 'watch', 'unwatch', 'allow', 'unallow'] },
+      action: { type: 'string', enum: ['list', 'test', 'add', 'toggle', 'watch'] },
       id: { type: 'string', description: 'type id for add/remove/toggle/test (custom ids may omit the custom: prefix)' },
       label: { type: 'string', description: 'human label for add' },
       regex: { type: 'string', description: 'regex source for add or test' },
       placeholder: { type: 'string', description: 'redaction tag for add, e.g. REF -> [REF_1]' },
       samples: { type: 'array', items: { type: 'string' }, description: 'sample strings for test' },
-      term: { type: 'string', description: 'term for watch/unwatch/allow/unallow' },
-      enabled: { type: 'boolean', description: 'for toggle' },
+      term: { type: 'string', description: 'name or term for watch' },
+      enabled: { type: 'boolean', description: 'for toggle; only true is accepted' },
     },
     required: ['action'],
   },
@@ -48,7 +48,8 @@ export function runPatternsTool(config: Config, input: Record<string, unknown>):
           id: t.id, label: t.label, category: t.category, enabled: t.enabled, source: t.source,
           placeholder: t.placeholder, patterns: t.source === 'custom' ? t.patterns : undefined,
         })),
-        watchlist: config.watchlist, allowlist: config.allowlist, scanToolReads: config.scanToolReads,
+        // Counts only: the watchlist holds names, which are themselves personal data.
+        watchlistCount: config.watchlist.length, allowlistCount: config.allowlist.length, scanToolReads: config.scanToolReads,
       } } }
     case 'test': {
       const samples = Array.isArray(input.samples) ? input.samples.filter((s): s is string => typeof s === 'string') : []
@@ -73,23 +74,20 @@ export function runPatternsTool(config: Config, input: Record<string, unknown>):
       const r = addCustomType(config, { id, regex, label: str(input.label), placeholder: str(input.placeholder) })
       return r.ok ? saved(r.config, `added custom:${id.replace(/^custom:/, '')}, enabled`) : fail(r.reason)
     }
-    case 'remove': {
-      const r = removeType(config, str(input.id) ?? '')
-      return r.ok ? saved(r.config, `removed ${String(input.id)}`) : fail(r.reason)
-    }
     case 'toggle': {
-      if (typeof input.enabled !== 'boolean') return fail('enabled (boolean) required')
-      const r = setEnabled(config, str(input.id) ?? '', input.enabled)
-      return r.ok ? saved(r.config, `${String(input.id)} ${input.enabled ? 'enabled' : 'disabled'}`) : fail(r.reason)
+      if (input.enabled !== true) return fail('only enabled=true is accepted here; turning a type off is done by the person with /pii off <id>')
+      const r = setEnabled(config, str(input.id) ?? '', true)
+      return r.ok ? saved(r.config, `${String(input.id)} enabled`) : fail(r.reason)
     }
-    case 'watch': case 'unwatch': case 'allow': case 'unallow': {
+    case 'watch': {
       const term = str(input.term)
       if (!term) return fail('term required')
-      const list = action.endsWith('watch') ? 'watchlist' : 'allowlist'
-      const c = action.startsWith('un') ? removeTerm(config, list, term) : addTerm(config, list, term)
-      return saved(c, `${action}: ${list} now has ${c[list].length} entries`)
+      const c = addTerm(config, 'watchlist', term)
+      return saved(c, `watchlist now has ${c.watchlist.length} entries`)
     }
+    case 'remove': case 'unwatch': case 'allow': case 'unallow':
+      return fail(`${action} weakens the guard and is only available to the person: use /pii ${action === 'remove' ? 'rm' : action} <...>`)
     default:
-      return fail('unknown action; use list, test, add, remove, toggle, watch, unwatch, allow, unallow')
+      return fail('unknown action; use list, test, add, toggle (enabled=true), watch')
   }
 }

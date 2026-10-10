@@ -41,6 +41,8 @@ export type Unscannable = { filename?: string; type: string; mediaType?: string 
 export type Review = {
   id: string
   kind: 'prompt' | 'tool'
+  /** The prompt as typed, resubmitted (redacted) on Send. Empty for a tool review. */
+  original: string
   sections: ReviewSection[]
   findings: Finding[]
   unscannable: Unscannable[]
@@ -52,6 +54,8 @@ declare module 'claude-code' {
   interface PluginState {
     'pii-guard': {
       review: Review | null
+      /** Prompts held behind the one shown, oldest first. */
+      queue: Review[]
       sessionAllows: string[]
       settingsOpen: boolean
       configVersion: number

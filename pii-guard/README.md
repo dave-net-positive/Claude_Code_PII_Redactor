@@ -11,9 +11,19 @@ A Claude Code mod that holds prompts containing PII or secrets behind a review p
 
 ## The review
 
-Each detected type gets a row: **Allow once**, **Allow this session**, **Redact** (the default). Send applies the choices; Cancel, Escape or closing the pane drops the prompt. Redacted values become numbered placeholders, `[EMAIL_1]`, `[CARD_2]`, the same value always getting the same number within one prompt and its files, so Claude can still reason about "the second email".
+When a prompt contains PII the mod holds it (the transcript shows it was held) and opens the review pane. Each detected type gets a row: **Allow once**, **Allow this session**, **Redact** (the default). **Send** resubmits the prompt as your own words with the redactions applied; the transcript names pii-guard as the sender. **Cancel**, Escape or closing the pane discards the held prompt. Prompts that arrive while a review is open queue behind it.
 
-In a headless `claude -p` run there is nobody to ask, so everything flagged is redacted and the run continues. If the mod itself fails, the prompt is held rather than sent.
+Redacted values become numbered placeholders, `[EMAIL_1]`, `[CARD_2]`, the same value always getting the same number within one prompt and its files, so Claude can still reason about "the second email". Once anything has been redacted, Claude's system prompt carries a standing note that placeholders stand for redacted values and must never be written into files.
+
+Files you mentioned with `@path` are shown as their own sections and, on Send, appended to the resubmitted prompt with the same redactions applied.
+
+A prompt that carries an image, PDF or audio attachment cannot be resubmitted with the attachment, so it is decided in Claude Code's own question dialog instead: redact the text and send, send everything as-is, or cancel. The pane still shows what was found.
+
+In a non-interactive run (`claude -p`) there is nobody to ask, so everything flagged is redacted and the run continues. If the mod itself fails, the prompt is held rather than sent.
+
+### Read tool results (opt-in)
+
+With "Scan Read tool results" on, a `Read` whose content contains PII is decided in the question dialog mid-turn: redact and continue, allow once, allow this session (all types found in that file), or withhold the result. Any failure in that path withholds the result.
 
 ## Built-in types
 
@@ -23,7 +33,7 @@ email, phone, UK postcode, NI number, NHS number (mod-11 checked), passport, UK 
 
 - `/pii` opens the settings pane: toggle types, edit the names watchlist and the allowlist, turn Read scanning on.
 - `/pii add <id> <regex>` adds a custom type; `/pii test <id|regex> <sample>` tries one; `/pii list` shows everything.
-- Ask Claude: "add a pattern for our internal ticket ids like REF-123456". It uses the `pii_patterns` tool to test the regex against samples and add it. The addition shows as a normal tool call you approve.
+- Ask Claude: "add a pattern for our internal ticket ids like REF-123456". It uses the `pii_patterns` tool to test the regex against samples and add it. The tool can only strengthen the guard: list, test, add a type, add a watchlist name, turn a type on. Turning types off, removing types, allowlisting and unwatching are yours alone through `/pii`, so a prompt injection cannot switch the guard off. The tool never returns watchlist or allowlist entries, only counts.
 
 Custom regexes get flags `giu`, must be 500 characters or fewer, and are rejected if they nest quantifiers or match the empty string.
 

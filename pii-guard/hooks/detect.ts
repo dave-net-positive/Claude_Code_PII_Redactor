@@ -6,14 +6,94 @@ const MAX_PATTERN = 500
 
 export type Compiled = { ok: true; regex: RegExp } | { ok: false; reason: string }
 
-const NESTED_QUANTIFIER = /\((?:[^()\\]|\\.)*[*+]\s*(?:[^()\\]|\\.)*\)\s*[*+{]/
-const ALTERNATION_IN_QUANTIFIED_GROUP = /\((?:[^()\\|]|\\.)*\|(?:[^()\\]|\\.)*\)\s*[*+{]/
+/**
+ * Walks the pattern and refuses the shapes that backtrack catastrophically: a
+ * group repeated without bound (`*`, `+`, `{n,}`) while it contains a
+ * variable-width repetition (`?`, `*`, `+`, `{n,m}`, `{n,}`) or an alternation,
+ * at any depth. A bounded outer repeat (`{2,7}`) caps the work and is allowed.
+ * Escapes and classes are skipped. Conservative: it may refuse a safe pattern.
+ */
+function lintBacktracking(source: string): string | null {
+  type Frame = { hasQuantifier: boolean; hasAlternation: boolean }
+  const stack: Frame[] = [{ hasQuantifier: false, hasAlternation: false }]
+  const top = () => stack[stack.length - 1]!
+  // The group that closed most recently, so a following quantifier can be judged.
+  let justClosed: Frame | null = null
+  let i = 0
+  const n = source.length
+  // variable: the quantifier can match more than one width; unbounded: no upper limit.
+  const isRepeat = (at: number): { variable: boolean; unbounded: boolean; len: number } => {
+    const ch = source[at]
+    if (ch === '*' || ch === '+') return { variable: true, unbounded: true, len: 1 }
+    if (ch === '?') return { variable: true, unbounded: false, len: 1 }
+    if (ch === '{') {
+      const m = /^\{(\d+)(?:,(\d*))?\}/.exec(source.slice(at))
+      if (!m) return { variable: false, unbounded: false, len: 0 }
+      const min = Number(m[1])
+      const max = m[2] === undefined ? min : m[2] === '' ? Infinity : Number(m[2])
+      return { variable: max !== min, unbounded: max === Infinity, len: m[0].length }
+    }
+    return { variable: false, unbounded: false, len: 0 }
+  }
+  while (i < n) {
+    const ch = source[i]!
+    if (ch === '\\') { i += 2; justClosed = null; continue }
+    if (ch === '[') {
+      i++
+      if (source[i] === '^') i++
+      if (source[i] === ']') i++
+      while (i < n && source[i] !== ']') { if (source[i] === '\\') i++; i++ }
+      i++
+      justClosed = null
+      continue
+    }
+    if (ch === '(') {
+      stack.push({ hasQuantifier: false, hasAlternation: false })
+      if (source[i + 1] === '?') {
+        // (?: (?= (?! (?<= (?<! (?<name>  — skip the prefix so it is not read as content
+        const m = /^\(\?(?::|=|!|<=|<!|<[A-Za-z_][A-Za-z0-9_]*>)/.exec(source.slice(i))
+        i += m ? m[0].length : 1
+      } else i++
+      justClosed = null
+      continue
+    }
+    if (ch === ')') {
+      const closed = stack.pop() ?? { hasQuantifier: false, hasAlternation: false }
+      if (stack.length === 0) stack.push({ hasQuantifier: false, hasAlternation: false })
+      i++
+      const q = isRepeat(i)
+      if (q.unbounded) {
+        if (closed.hasQuantifier) return 'an unbounded repeated group contains a variable quantifier (catastrophic backtracking risk), rewrite without nesting or bound the repeat'
+        if (closed.hasAlternation) return 'an unbounded repeated group contains alternation (catastrophic backtracking risk), make the branches mutually exclusive or bound the repeat'
+      }
+      if (q.len) { i += q.len; if (source[i] === '?') i++ }
+      // Whatever the group did, its parent now holds a variable repeat or an alternation.
+      top().hasQuantifier ||= closed.hasQuantifier || q.variable
+      top().hasAlternation ||= closed.hasAlternation
+      justClosed = closed
+      continue
+    }
+    if (ch === '|') { top().hasAlternation = true; i++; justClosed = null; continue }
+    const q = isRepeat(i)
+    if (q.len) {
+      if (q.variable) top().hasQuantifier = true
+      i += q.len
+      if (source[i] === '?') i++
+      justClosed = null
+      continue
+    }
+    i++
+    justClosed = null
+  }
+  void justClosed
+  return null
+}
 
 export function compilePattern(source: string, flags: 'giu' | 'gu' = 'giu'): Compiled {
   if (typeof source !== 'string' || source.length === 0) return { ok: false, reason: 'pattern is empty' }
   if (source.length > MAX_PATTERN) return { ok: false, reason: `pattern is longer than ${MAX_PATTERN} characters` }
-  if (NESTED_QUANTIFIER.test(source)) return { ok: false, reason: 'a quantified group contains a quantifier (catastrophic backtracking risk), rewrite without nesting' }
-  if (ALTERNATION_IN_QUANTIFIED_GROUP.test(source)) return { ok: false, reason: 'a quantified group contains alternation (catastrophic backtracking risk), make the branches mutually exclusive or drop the quantifier' }
+  const lint = lintBacktracking(source)
+  if (lint) return { ok: false, reason: lint }
   let regex: RegExp
   try { regex = new RegExp(source, flags) } catch (err) {
     return { ok: false, reason: `does not compile: ${(err as Error).message}` }

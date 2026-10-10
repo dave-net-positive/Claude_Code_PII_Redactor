@@ -403,6 +403,20 @@ removing go through normal tool permission; the user sees the call.
 - The default decision is redact and the no-surface path redacts everything,
   so an unattended run cannot send flagged values.
 
+## v1 as built: deviations from the flow above
+
+Found during implementation and the final review; the code is the authority where this section and the flow disagree.
+
+1. **Drop and resubmit instead of awaiting the pane.** A hook's 10-second budget keeps running while it awaits anything that is not a `$` call, so the `prompt.submit` hook cannot wait for a pane press. It drops the prompt with `Held for PII review`, shows the pane, and the pane's Send button resubmits the redacted text with `$.prompt.submit({ text, asUser: true })`. Reviews queue behind the one shown. The plugin's own hooks do not see its own resubmit, so mentioned files ride inside the resubmitted text (redacted) rather than as `context`, and the placeholder guidance is a session-scoped `prompt.compose` section added once anything was redacted.
+2. **Attachments present: the engine dialog decides.** A resubmit cannot carry images, PDFs or audio, so such prompts are decided with `$.ui.ask` (a `$` call, budget-safe): redact text and send, send as-is, or cancel. The pane shows the findings alongside.
+3. **Read gate decides in the dialog, all types at once.** `$.ui.ask` with Redact / Allow once / Allow this session / Withhold; the pane shows the hit. Any failure after the read ran withholds the result.
+4. **File attachments are rescanned, never matched by path.** Every main-loop `file` attachment is rescanned and redacted with the last sent prompt's decisions (default redact), with a toast when anything was redacted.
+5. **Headless detection** uses `session.start`'s `isInteractive`, not the prompt origin.
+6. **Slash-command skip** applies only when the first token names a registered command (`$.command.list()`).
+7. **`pii_patterns` can only strengthen the guard**: list (counts, never entries), test, add, watch, enable. Weakening actions are `/pii` only. Subagent calls are refused.
+8. **ReDoS lint** is a small parser: an unbounded repeated group that contains a variable-width quantifier or an alternation is refused; bounded repeats are allowed.
+9. **`PiiType.caseSensitive`** added; the name heuristic compiles without the `i` flag.
+
 ## v2 backlog
 
 Recorded here so it is not lost:
@@ -416,3 +430,8 @@ Recorded here so it is not lost:
 4. A compact band above the prompt showing the session's allowed types with a
    one-press revoke.
 5. Export and import of custom pattern sets.
+6. Per-type decisions on the Read path (today all-or-nothing in the dialog).
+7. Guard `Write`/`Edit` against placeholders handed out this session.
+8. Numbering that persists across prompts in a session, so `[EMAIL_1]` means one person throughout.
+9. Notice when a non-text `Read` record (notebook, image) is passed unscanned, and when the 200k scan cap truncates a clean section.
+10. Decouple the watchlist from the `name` type so turning the heuristic off keeps the watchlist.

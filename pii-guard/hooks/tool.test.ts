@@ -39,7 +39,7 @@ test('test action works on an unsaved regex and reports per sample', async ($, o
   expect(r.data).toEqual([{ sample: 'REF-123456', found: ['REF-123456'] }, { sample: 'REF-12', found: [] }])
 })
 
-test('add stores a custom type; list shows it; remove deletes it', async ($, on) => {
+test('add stores a custom type and list shows it; remove is refused', async ($, on) => {
   mock.store(on); stub(on)
   const bad = await call($, { action: 'add', id: 'ref', regex: '(a+)+' })
   expect(bad.ok).toBe(false)
@@ -48,19 +48,17 @@ test('add stores a custom type; list shows it; remove deletes it', async ($, on)
   const list = await call($, { action: 'list' })
   expect(JSON.stringify(list.data)).toMatch(/custom:ref/)
   const rm = await call($, { action: 'remove', id: 'ref' })
-  expect(rm.ok).toBe(true)
-  expect(JSON.stringify((await call($, { action: 'list' })).data)).not.toMatch(/custom:ref/)
+  expect(rm.ok).toBe(false)
+  expect(JSON.stringify((await call($, { action: 'list' })).data)).toMatch(/custom:ref/)
 })
 
-test('watch, allow, toggle persist', async ($, on) => {
-  mock.store(on); stub(on)
+test('watch and enable persist', async ($, on) => {
+  mock.store(on, { config: { version: 1, types: [{ id: 'email', source: 'builtin', enabled: false }], watchlist: [], allowlist: [], scanToolReads: false } }); stub(on)
   expect((await call($, { action: 'watch', term: 'Joanna' })).ok).toBe(true)
-  expect((await call($, { action: 'allow', term: 'Acme' })).ok).toBe(true)
-  expect((await call($, { action: 'toggle', id: 'email', enabled: false })).ok).toBe(true)
-  const data = (await call($, { action: 'list' })).data as { watchlist: string[]; allowlist: string[]; types: { id: string; enabled: boolean }[] }
-  expect(data.watchlist).toEqual(['Joanna'])
-  expect(data.allowlist).toContain('acme')
-  expect(data.types.find(t => t.id === 'email')!.enabled).toBe(false)
+  expect((await call($, { action: 'toggle', id: 'email', enabled: true })).ok).toBe(true)
+  const data = (await call($, { action: 'list' })).data as { watchlistCount: number; types: { id: string; enabled: boolean }[] }
+  expect(data.watchlistCount).toBe(1)
+  expect(data.types.find(t => t.id === 'email')!.enabled).toBe(true)
 })
 
 test('unknown action and missing fields are refused', async ($, on) => {
@@ -68,4 +66,34 @@ test('unknown action and missing fields are refused', async ($, on) => {
   expect((await call($, { action: 'explode' })).ok).toBe(false)
   expect((await call($, { action: 'add' })).ok).toBe(false)
   expect((await call($, { action: 'test', regex: 'x' })).ok).toBe(false)
+})
+
+test('weakening actions are refused by the tool and pointed at /pii', async ($, on) => {
+  mock.store(on); stub(on)
+  for (const input of [
+    { action: 'remove', id: 'email' },
+    { action: 'toggle', id: 'email', enabled: false },
+    { action: 'allow', term: 'x' },
+    { action: 'unwatch', term: 'x' },
+    { action: 'unallow', term: 'x' },
+  ]) {
+    const r = await call($, input)
+    expect(r.ok).toBe(false)
+    expect(r.message).toMatch(/\/pii/)
+  }
+  const data = (await call($, { action: 'list' })).data as { types: { id: string; enabled: boolean }[] }
+  expect(data.types.find(t => t.id === 'email')!.enabled).toBe(true)
+})
+
+test('list reports watchlist and allowlist counts, never the entries', async ($, on) => {
+  mock.store(on, { config: { version: 1, types: [], watchlist: ['Joanna Bloggs'], allowlist: ['acme'], scanToolReads: false } }); stub(on)
+  const r = await call($, { action: 'list' })
+  expect(JSON.stringify(r)).not.toMatch(/Joanna/)
+  expect(r.data).toMatchObject({ watchlistCount: 1, allowlistCount: 1 })
+})
+
+test('subagent calls are refused', async ($, on) => {
+  mock.store(on); stub(on)
+  const r = await $.tool.call({ tool: TOOL, action: 'list', agentId: 'sub-1' } as never)
+  expect('result' in r && (r.result as Answer).ok).toBe(false)
 })

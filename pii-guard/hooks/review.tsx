@@ -115,7 +115,7 @@ function sectionBlock(E: PaneElements, section: ReviewSection, all: Finding[], c
   )
 }
 
-export function renderReview(E: PaneElements, review: Review, config: Config, actions: PaneActions) {
+export function renderReview(E: PaneElements, review: Review, config: Config, actions: PaneActions, waiting = 0) {
   const { Box, Text, Button } = E
   const order: string[] = []
   for (const f of review.findings) if (!order.includes(f.typeId)) order.push(f.typeId)
@@ -131,7 +131,8 @@ export function renderReview(E: PaneElements, review: Review, config: Config, ac
         {review.unscannable.length ? `, ${plural(review.unscannable.length, 'attachment')} cannot be scanned` : ''}
       </Text>
       <Text dimColor>
-        {review.kind === 'tool' ? 'A Read result is held until you decide.' : 'The prompt is held until you decide. Escape cancels.'}
+        {review.kind === 'tool' ? 'A Read result is held until you answer the dialog.' : 'The prompt is held until you decide. Escape cancels.'}
+        {waiting > 0 ? ` ${plural(waiting, 'more prompt')} waiting.` : ''}
       </Text>
       <Box flexDirection="column" marginTop={1}>
         {review.sections.map(s => sectionBlock(E, s, review.findings, config))}
@@ -159,8 +160,12 @@ export function renderReview(E: PaneElements, review: Review, config: Config, ac
         </Box>
       ) : null}
       <Box gap={2} marginTop={1}>
-        <Button key="send" hotkey="s" label={redactions ? `Send with ${plural(redactions, 'redaction')}` : 'Send'} onPress={() => actions.send()} />
-        <Button key="cancel" hotkey="c" label="Cancel" onPress={() => actions.cancel()} />
+        {review.kind === 'prompt'
+          ? <Button key="send" hotkey="s" label={redactions ? `Send with ${plural(redactions, 'redaction')}` : 'Send'} onPress={() => actions.send()} />
+          : null}
+        {review.kind === 'prompt'
+          ? <Button key="cancel" hotkey="c" label="Cancel" onPress={() => actions.cancel()} />
+          : <Text dimColor>Answer in the dialog.</Text>}
         <Button key="settings" hotkey="o" label="Settings" onPress={() => actions.openSettings()} />
       </Box>
     </Box>

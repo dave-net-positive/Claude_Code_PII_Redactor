@@ -95,3 +95,12 @@ test('scan caps input at MAX_SCAN', async () => {
   const text = 'x'.repeat(200_000) + ' a@b.co'
   expect(scan(text, 'prompt', config())).toEqual([])
 })
+
+test('compilePattern rejects nested quantifiers written with braces or inner groups', async () => {
+  expect(compilePattern('(\\d{1,9})+x').ok).toBe(false)
+  expect(compilePattern('(?:(a+))+x').ok).toBe(false)
+  expect(compilePattern('(a|aa)*b').ok).toBe(false)
+  expect(compilePattern('(?:ab){2,4}').ok).toBe(true)
+  expect(compilePattern('(?: ?[A-Z0-9]{4}){2,7}').ok).toBe(true)
+  expect(compilePattern('\\(\\d+\\)+').ok).toBe(true)
+})

@@ -1,4 +1,5 @@
 import { test, expect, mock } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 const paneProps = {
@@ -10,40 +11,57 @@ const paneProps = {
   view: {},
 }
 
-/** Bottom hooks for what the gate calls on `$`; `opened` resolves once the pane was asked for, `nextOpen()` re-arms it. */
-function stub(on: On, over: { open?: () => never } = {}) {
+type Submitted = { text: string; origin: unknown; context?: readonly string[] }
+
+/**
+ * Bottom hooks for what the gate calls on `$`. `submitted` records every prompt
+ * that reached the bottom (the plugin's resubmits included); `asked` answers
+ * the engine's AskUserQuestion dialog with the label `answer()` returns.
+ */
+type FsStub = { stat?: (path: string) => { kind: 'file' | 'dir' | 'other'; size: number; mtimeMs: number; isLink: boolean }; read?: (path: string) => string }
+function stub(on: On, over: { open?: () => never; answer?: (options: string[]) => string; fs?: FsStub } = {}) {
   const log: string[] = []
-  let signal!: () => void
-  const arm = () => new Promise<void>(r => { signal = r })
-  const opened = arm()
+  const submitted: Submitted[] = []
+  let opens = 0
   on('ui.open', () => {
     if (over.open) over.open()
-    signal()
+    opens++
     return { value: { isPlaced: true as const } }
   })
   on('ui.close', () => ({ value: undefined }))
   on('ui.toast', ($, e) => { log.push(`toast:${e.text}`); return { value: undefined } })
   on('ui.log', ($, e) => { log.push(`log:${e.text}`); return { value: undefined } })
-  on('fs.stat', () => { throw new Error('ENOENT') })
-  on('prompt.submit', ($, e) => ({ text: e.text }))
-  return { log, opened, nextOpen: arm }
+  on('fs.stat', ($, e) => { if (over.fs?.stat) return { value: over.fs.stat(e.path) }; throw new Error('ENOENT') })
+  on('fs.read', ($, e) => { if (over.fs?.read) return { value: over.fs.read(e.path) }; throw new Error('ENOENT') })
+  on('command.list', () => ({ value: [{ name: 'pii', description: '', source: 'plugin' as never }] }))
+  on('prompt.submit', ($, e) => { submitted.push({ text: e.text, origin: e.origin, context: e.context }); return { text: e.text } })
+  on('prompt.compose', () => ({ sections: [{ id: 'core', text: 'base', scope: 'shared' as const }] }))
+  on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
+    const q = (e as unknown as { questions: { question: string; options: { label: string }[] }[] }).questions[0]!
+    const label = over.answer ? over.answer(q.options.map(o => o.label)) : q.options[0]!.label
+    return { result: { questions: [q], answers: { [q.question]: label } } } as never
+  })
+  return { log, submitted, opens: () => opens }
 }
 
 const submit = (text: string, extra: Record<string, unknown> = {}) =>
   ({ text, wait: false, origin: { kind: 'composer' as const }, ...extra })
 
+const mount = ($: Engine, surface: 'terminal' | 'desktop' = 'terminal') =>
+  $.ui.mount({ plugin: 'pii-guard', surface, component: 'Pane', requestId: 'pii-guard', props: paneProps })
+
+const HELD = { drop: 'Held for PII review' }
+
 for (const surface of ['terminal', 'desktop'] as const) {
   test(`clean prompt passes untouched on ${surface}`, async ($, on) => {
     mock.store(on); stub(on)
-    const r = await $.prompt.submit(submit('hello world'))
-    expect(r).toEqual({ text: 'hello world' })
+    expect(await $.prompt.submit(submit('hello world'))).toEqual({ text: 'hello world' })
   })
 
-  test(`review draws sections, rows and footer; redact card, allow email, send on ${surface}`, async ($, on) => {
-    mock.store(on); const { opened } = stub(on)
-    const run = $.prompt.submit(submit('mail a@b.co card 4111 1111 1111 1111'))
-    await opened
-    const ui = await $.ui.mount({ plugin: 'pii-guard', surface, component: 'Pane', requestId: 'pii-guard', props: paneProps })
+  test(`review holds the prompt; redact card, allow email, send resubmits as the user on ${surface}`, async ($, on) => {
+    mock.store(on); const { submitted } = stub(on)
+    expect(await $.prompt.submit(submit('mail a@b.co card 4111 1111 1111 1111'))).toEqual(HELD)
+    const ui = await mount($, surface)
     expect(await ui.find({ text: /2 findings in 1 section/ })).toBeTruthy()
     expect(await ui.find({ key: 'decide:card:allow-session' })).toBeTruthy()
     expect((await ui.find({ key: 'send' }))?.props.label).toBe('Send with 2 redactions')
@@ -52,28 +70,51 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await ui.press({ key: 'decide:email:allow-once' })
     expect((await ui.find({ key: 'send' }))?.props.label).toBe('Send with 1 redaction')
     await ui.press({ key: 'send' })
-    expect(await run).toEqual({ text: 'mail a@b.co card [CARD_1]' })
+    expect(submitted.length).toBe(1)
+    expect(submitted[0]!.text).toBe('mail a@b.co card [CARD_1]')
+    expect(submitted[0]!.origin).toMatchObject({ kind: 'plugin', name: 'pii-guard', asUser: true })
+    // After a redaction the system prompt carries the placeholder note.
+    const composed = await $.prompt.compose({ model: 'm', promptModel: 'm', surfaces: ['terminal'], tools: [], outputStyle: null, traits: [] })
+    expect(composed.sections.some(s => s.id === 'pii-guard:placeholders' && /placeholder/i.test(s.text))).toBe(true)
+    // The pane falls back to settings once nothing is pending.
+    expect(await ui.find({ key: 'back' })).toBeTruthy()
   })
 
-  test(`cancel drops the prompt on ${surface}`, async ($, on) => {
-    mock.store(on); const { log, opened } = stub(on)
-    const run = $.prompt.submit(submit('a@b.co'))
-    await opened
-    const ui = await $.ui.mount({ plugin: 'pii-guard', surface, component: 'Pane', requestId: 'pii-guard', props: paneProps })
+  test(`cancel discards the held prompt on ${surface}`, async ($, on) => {
+    mock.store(on); const { log, submitted } = stub(on)
+    expect(await $.prompt.submit(submit('a@b.co'))).toEqual(HELD)
+    const ui = await mount($, surface)
     await ui.press({ key: 'cancel' })
-    expect(await run).toEqual({ drop: 'Cancelled in PII review' })
+    expect(submitted).toEqual([])
     expect(log.some(l => l.startsWith('toast:Prompt cancelled'))).toBe(true)
   })
 }
 
-test('image attachment with no text findings asks; send passes unchanged', async ($, on) => {
-  mock.store(on); const { opened } = stub(on)
-  const run = $.prompt.submit(submit('look at this', { attachments: [{ type: 'image', mediaType: 'image/png', filename: 'x.png' }] }))
-  await opened
-  const ui = await $.ui.mount({ plugin: 'pii-guard', surface: 'terminal', component: 'Pane', requestId: 'pii-guard', props: paneProps })
-  expect(await ui.find({ text: /x\.png/ })).toBeTruthy()
+test('a second prompt during a review is queued and shown after the first is sent', async ($, on) => {
+  mock.store(on); const { submitted } = stub(on)
+  expect(await $.prompt.submit(submit('first a@b.co'))).toEqual(HELD)
+  expect(await $.prompt.submit(submit('second 4111 1111 1111 1111'))).toEqual(HELD)
+  const ui = await mount($)
+  expect(await ui.find({ text: /first/ })).toBeTruthy()
+  expect(await ui.find({ text: /1 more prompt waiting/ })).toBeTruthy()
   await ui.press({ key: 'send' })
-  expect(await run).toEqual({ text: 'look at this' })
+  expect(submitted.map(s => s.text)).toEqual(['first [EMAIL_1]'])
+  expect(await ui.find({ text: /second/ })).toBeTruthy()
+  await ui.press({ key: 'send' })
+  expect(submitted.map(s => s.text)).toEqual(['first [EMAIL_1]', 'second [CARD_1]'])
+})
+
+test('text findings plus an image: the engine dialog decides, attachments are kept', async ($, on) => {
+  mock.store(on); const { opens } = stub(on, { answer: o => o.find(x => x.startsWith('Redact'))! })
+  const r = await $.prompt.submit(submit('mail a@b.co', { attachments: [{ type: 'image', mediaType: 'image/png', filename: 'x.png' }] }))
+  expect(r).toEqual({ text: 'mail [EMAIL_1]' })
+  expect(opens()).toBe(1)
+})
+
+test('image only: the dialog offers Send or Cancel', async ($, on) => {
+  mock.store(on); stub(on, { answer: () => 'Cancel' })
+  const r = await $.prompt.submit(submit('look', { attachments: [{ type: 'image', mediaType: 'image/png', filename: 'x.png' }] }))
+  expect(r).toEqual({ drop: 'Cancelled in PII review' })
 })
 
 test('plugin-origin prompts are not scanned', async ($, on) => {
@@ -82,17 +123,19 @@ test('plugin-origin prompts are not scanned', async ($, on) => {
   expect(r).toEqual({ text: 'a@b.co' })
 })
 
-test('ignores slash-command prompts', async ($, on) => {
+test('only a registered slash command skips the scan', async ($, on) => {
   mock.store(on); stub(on)
-  const r = await $.prompt.submit(submit('/pii allow a@b.co'))
-  expect(r).toEqual({ text: '/pii allow a@b.co' })
+  expect(await $.prompt.submit(submit('/pii allow a@b.co'))).toEqual({ text: '/pii allow a@b.co' })
+  expect(await $.prompt.submit(submit('/var/log/app.log shows john@x.com failing'))).toEqual(HELD)
 })
 
-test('sdk origin redacts everything and continues, logging counts only', async ($, on) => {
+test('a non-interactive session redacts everything inline, logging counts only', async ($, on) => {
   mock.store(on); const { log } = stub(on)
-  const r = await $.prompt.submit(submit('a@b.co', { origin: { kind: 'sdk' } }))
+  on('tool.register', () => ({ value: { tool: 'x' } })); on('command.register', () => ({ value: { command: 'pii' } })); on('session.start', ($, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: 'E:/x', surface: null, isInteractive: false })
+  const r = await $.prompt.submit(submit('a@b.co'))
   expect(r).toEqual({ text: '[EMAIL_1]' })
-  expect(log.some(l => l.startsWith('log:pii-guard: headless') && !l.includes('a@b.co'))).toBe(true)
+  expect(log.some(l => l.startsWith('log:pii-guard: non-interactive') && !l.includes('a@b.co'))).toBe(true)
 })
 
 test('a failure while opening the pane fails closed', async ($, on) => {
@@ -101,105 +144,73 @@ test('a failure while opening the pane fails closed', async ($, on) => {
   expect('drop' in r && typeof r.drop === 'string').toBe(true)
 })
 
-test('mentioned file is scanned, shown, and redacted at attachment time', async ($, on) => {
+test('mentioned file is scanned, shown, and sent redacted inside the resubmitted text', async ($, on) => {
   mock.store(on)
-  let signal!: () => void
-  const opened = new Promise<void>(r => { signal = r })
-  on('ui.open', () => { signal(); return { value: { isPlaced: true as const } } })
-  on('ui.close', () => ({ value: undefined })); on('ui.toast', () => ({ value: undefined })); on('ui.log', () => ({ value: undefined }))
-  on('fs.stat', ($, e) => {
-    if (e.path.endsWith('notes.md')) return { value: { kind: 'file' as const, size: 10, mtimeMs: 0, isLink: false } }
-    throw new Error('ENOENT')
-  })
-  on('fs.read', ($, e) => {
-    if (e.path.endsWith('notes.md')) return { value: 'contact joanna@example.com now' }
-    throw new Error('ENOENT')
-  })
-  on('prompt.submit', ($, e) => ({ text: e.text }))
-  on('prompt.attachment', ($, e) => ({ text: e.text }))
-
-  const run = $.prompt.submit(submit('summarise @notes.md please'))
-  await opened
-  const ui = await $.ui.mount({ plugin: 'pii-guard', surface: 'terminal', component: 'Pane', requestId: 'pii-guard', props: paneProps })
+  const { submitted } = stub(on, { fs: {
+    stat: p => { if (p.endsWith('notes.md')) return { kind: 'file', size: 10, mtimeMs: 0, isLink: false }; throw new Error('ENOENT') },
+    read: p => { if (p.endsWith('notes.md')) return 'contact joanna@example.com now'; throw new Error('ENOENT') },
+  } })
+  expect(await $.prompt.submit(submit('summarise @notes.md please'))).toEqual(HELD)
+  const ui = await mount($)
   expect(await ui.find({ text: /@notes\.md/ })).toBeTruthy()
   expect(await ui.find({ text: /1 finding in 2 sections/ })).toBeTruthy()
   await ui.press({ key: 'send' })
-  expect(await run).toEqual({ text: 'summarise @notes.md please' })
-
-  const framed = 'Called the Read tool with the following input: {"file_path":"notes.md"}\n\nResult of calling the Read tool:\ncontact joanna@example.com now'
-  const att = await $.prompt.attachment({ type: 'file', text: framed, origin: { kind: 'engine' } } as never)
-  expect(att).toEqual({ text: framed.replace('joanna@example.com', '[EMAIL_1]') })
-
-  // A repeat attachment is rescanned with the same decisions, never passed through on a missed match.
-  const again = await $.prompt.attachment({ type: 'file', text: framed, origin: { kind: 'engine' } } as never)
-  expect(again).toEqual({ text: framed.replace('joanna@example.com', '[EMAIL_1]') })
-
-  // A file attachment that was not read ahead (unattributable) is still scanned and redacted.
-  const stray = await $.prompt.attachment({ type: 'file', text: 'other.txt\ncard 4111 1111 1111 1111', origin: { kind: 'engine' } } as never)
-  expect(stray).toEqual({ text: 'other.txt\ncard [CARD_1]' })
-
-  // Subagent attachments are left alone in v1.
-  const sub = await $.prompt.attachment({ type: 'file', text: framed, origin: { kind: 'engine' }, agentId: 'a1' } as never)
-  expect(sub).toEqual({ text: framed })
+  const text = submitted[0]!.text
+  expect(text.startsWith('summarise @notes.md please')).toBe(true)
+  expect(text).toMatch(/--- @notes\.md \(1 value\(s\) redacted by pii-guard\) ---/)
+  expect(text).toMatch(/contact \[EMAIL_1\] now/)
+  expect(text).not.toMatch(/joanna@example\.com/)
 })
 
-test('after a cancelled review a file attachment is redacted by default (fail closed)', async ($, on) => {
+test('Windows and home paths are read ahead', async ($, on) => {
   mock.store(on)
-  let signal!: () => void
-  const opened = new Promise<void>(r => { signal = r })
-  on('ui.open', () => { signal(); return { value: { isPlaced: true as const } } })
-  on('ui.close', () => ({ value: undefined })); on('ui.toast', () => ({ value: undefined })); on('ui.log', () => ({ value: undefined }))
-  on('fs.stat', () => ({ value: { kind: 'file' as const, size: 10, mtimeMs: 0, isLink: false } }))
-  on('fs.read', () => ({ value: 'a@b.co' }))
-  on('prompt.submit', ($, e) => ({ text: e.text }))
+  const seen: string[] = []
+  stub(on, { fs: { stat: p => { seen.push(p); throw new Error('ENOENT') } } })
+  await $.prompt.submit(submit('see @C:\\Users\\dave\\notes.md and @~/x.txt, then @"a b.txt".'))
+  // The engine resolves relative spellings against the working directory; the shapes are what matter.
+  expect(seen.length).toBe(3)
+  expect(seen[0]).toBe('C:\\Users\\dave\\notes.md')
+  expect(seen[1]!.endsWith('x.txt')).toBe(true)
+  expect(seen[2]!.endsWith('a b.txt')).toBe(true)
+})
+
+test('a stray file attachment is rescanned, redacted and announced', async ($, on) => {
+  mock.store(on); const { log } = stub(on)
   on('prompt.attachment', ($, e) => ({ text: e.text }))
-  const run = $.prompt.submit(submit('see @x.txt'))
-  await opened
-  const ui = await $.ui.mount({ plugin: 'pii-guard', surface: 'terminal', component: 'Pane', requestId: 'pii-guard', props: paneProps })
-  await ui.press({ key: 'cancel' })
-  expect(await run).toEqual({ drop: 'Cancelled in PII review' })
-  const att = await $.prompt.attachment({ type: 'file', text: 'x.txt\na@b.co', origin: { kind: 'engine' } } as never)
-  expect(att).toEqual({ text: 'x.txt\n[EMAIL_1]' })
+  const att = await $.prompt.attachment({ type: 'file', text: 'other.txt\ncard 4111 1111 1111 1111', origin: { kind: 'engine' } } as never)
+  expect(att).toEqual({ text: 'other.txt\ncard [CARD_1]' })
+  expect(log.some(l => l.startsWith('toast:pii-guard redacted 1 value(s) in an attached file'))).toBe(true)
+  const sub = await $.prompt.attachment({ type: 'file', text: 'a@b.co', origin: { kind: 'engine' }, agentId: 'a1' } as never)
+  expect(sub).toEqual({ text: 'a@b.co' })
 })
 
 test('skips unreadable mentions and directories', async ($, on) => {
   mock.store(on); stub(on)
-  const r = await $.prompt.submit(submit('look at @missing.txt and @src/'))
-  expect(r).toEqual({ text: 'look at @missing.txt and @src/' })
+  expect(await $.prompt.submit(submit('look at @missing.txt and @src/'))).toEqual({ text: 'look at @missing.txt and @src/' })
 })
 
 test('allow this session: a later prompt with only that type passes silently', async ($, on) => {
-  mock.store(on); const { log, opened } = stub(on)
-  const run = $.prompt.submit(submit('a@b.co'))
-  await opened
-  const ui = await $.ui.mount({ plugin: 'pii-guard', surface: 'terminal', component: 'Pane', requestId: 'pii-guard', props: paneProps })
+  mock.store(on); const { log, submitted } = stub(on)
+  expect(await $.prompt.submit(submit('a@b.co'))).toEqual(HELD)
+  const ui = await mount($)
   await ui.press({ key: 'decide:email:allow-session' })
   await ui.press({ key: 'send' })
-  expect(await run).toEqual({ text: 'a@b.co' })
+  expect(submitted[0]!.text).toBe('a@b.co')
   const toastsBefore = log.filter(l => l.startsWith('toast:')).length
-  const second = await $.prompt.submit(submit('again c@d.co'))
-  expect(second).toEqual({ text: 'again c@d.co' })
+  expect(await $.prompt.submit(submit('again c@d.co'))).toEqual({ text: 'again c@d.co' })
   expect(log.filter(l => l.startsWith('toast:')).length).toBe(toastsBefore)
 })
 
 test('session-allowed type is listed in settings and revoke re-arms it', async ($, on) => {
-  mock.store(on); const { opened, nextOpen } = stub(on)
-  const run = $.prompt.submit(submit('a@b.co'))
-  await opened
-  const ui = await $.ui.mount({ plugin: 'pii-guard', surface: 'terminal', component: 'Pane', requestId: 'pii-guard', props: paneProps })
+  mock.store(on); stub(on)
+  expect(await $.prompt.submit(submit('a@b.co'))).toEqual(HELD)
+  const ui = await mount($)
   await ui.press({ key: 'decide:email:allow-session' })
   await ui.press({ key: 'send' })
-  await run
-  // No review pending now, so the same mounted pane redraws as settings.
   expect(await ui.find({ key: 'revoke:email' })).toBeTruthy()
   await ui.press({ key: 'revoke:email' })
   expect(await ui.find({ key: 'revoke:email' })).toBeFalsy()
-  const reopened = nextOpen()
-  const run2 = $.prompt.submit(submit('c@d.co'))
-  await reopened
-  expect(await ui.find({ key: 'cancel' })).toBeTruthy()
-  await ui.press({ key: 'cancel' })
-  expect(await run2).toEqual({ drop: 'Cancelled in PII review' })
+  expect(await $.prompt.submit(submit('c@d.co'))).toEqual(HELD)
 })
 
 const readRecord = (content: string) => ({
@@ -215,40 +226,39 @@ test('Read scanning is off by default', async ($, on) => {
   expect('text' in r && r.text).toBe('NI AB 12 34 56 C')
 })
 
-test('with reads on, a hit opens the review and send redacts the record', async ($, on) => {
-  mock.store(on, readsOn); const { opened } = stub(on)
+test('with reads on, a hit asks through the engine dialog; redact rewrites the record', async ($, on) => {
+  mock.store(on, readsOn); const { opens } = stub(on, { answer: o => o.find(x => x.startsWith('Redact'))! })
   on('tool.call', { tool: 'Read' }, () => readRecord('NI AB 12 34 56 C') as never)
-  const run = $.tool.call({ tool: 'Read', file_path: 'C:/x/a.txt' })
-  await opened
-  const ui = await $.ui.mount({ plugin: 'pii-guard', surface: 'terminal', component: 'Pane', requestId: 'pii-guard', props: paneProps })
-  expect(await ui.find({ text: /Read C:\/x\/a\.txt/ })).toBeTruthy()
-  await ui.press({ key: 'send' })
-  const r = await run
+  const r = await $.tool.call({ tool: 'Read', file_path: 'C:/x/a.txt' })
   expect('result' in r && (r.result as { file: { content: string } }).file.content).toBe('NI [NINO_1]')
   expect('context' in r && r.context?.[0]).toMatch(/redacted 1 value/)
+  expect(opens()).toBe(1)
 })
 
-test('cancel withholds the Read result', async ($, on) => {
-  mock.store(on, readsOn); const { opened } = stub(on)
+test('withhold denies the Read result; allow once passes it', async ($, on) => {
+  mock.store(on, readsOn)
+  let answer = 'Withhold'
+  stub(on, { answer: () => answer })
   on('tool.call', { tool: 'Read' }, () => readRecord('a@b.co') as never)
-  const run = $.tool.call({ tool: 'Read', file_path: 'C:/x/a.txt' })
-  await opened
-  const ui = await $.ui.mount({ plugin: 'pii-guard', surface: 'terminal', component: 'Pane', requestId: 'pii-guard', props: paneProps })
-  await ui.press({ key: 'cancel' })
-  const r = await run
+  const denied = await $.tool.call({ tool: 'Read', file_path: 'C:/x/a.txt' })
+  expect('deny' in denied && denied.deny).toMatch(/withheld/)
+  answer = 'Allow once'
+  const allowed = await $.tool.call({ tool: 'Read', file_path: 'C:/x/a.txt' })
+  expect('text' in allowed && allowed.text).toBe('a@b.co')
+})
+
+test('a Read gate failure after the read ran denies, never passes the raw result', async ($, on) => {
+  mock.store(on, readsOn); stub(on, { open: () => { throw new Error('surface exploded') } })
+  on('tool.call', { tool: 'Read' }, () => readRecord('a@b.co') as never)
+  const r = await $.tool.call({ tool: 'Read', file_path: 'C:/x/a.txt' })
   expect('deny' in r && r.deny).toMatch(/withheld/)
 })
 
-test('a clean Read passes untouched with reads on', async ($, on) => {
+test('a clean Read passes untouched with reads on; subagent Reads are not gated', async ($, on) => {
   mock.store(on, readsOn); stub(on)
-  on('tool.call', { tool: 'Read' }, () => readRecord('nothing here') as never)
-  const r = await $.tool.call({ tool: 'Read', file_path: 'C:/x/a.txt' })
-  expect('text' in r && r.text).toBe('nothing here')
-})
-
-test('subagent Reads are not gated', async ($, on) => {
-  mock.store(on, readsOn); stub(on)
-  on('tool.call', { tool: 'Read' }, () => readRecord('a@b.co') as never)
-  const r = await $.tool.call({ tool: 'Read', file_path: 'C:/x/a.txt', agentId: 'sub-1' } as never)
-  expect('text' in r && r.text).toBe('a@b.co')
+  on('tool.call', { tool: 'Read' }, ($, e) => readRecord((e as { file_path: string }).file_path.endsWith('clean') ? 'nothing here' : 'a@b.co') as never)
+  const clean = await $.tool.call({ tool: 'Read', file_path: 'C:/x/clean' })
+  expect('text' in clean && clean.text).toBe('nothing here')
+  const sub = await $.tool.call({ tool: 'Read', file_path: 'C:/x/a.txt', agentId: 'sub-1' } as never)
+  expect('text' in sub && sub.text).toBe('a@b.co')
 })

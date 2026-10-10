@@ -16,8 +16,13 @@ import type { PaneActions } from './review'
 const PANE_ID = 'pii-guard'
 const configVersion = { plugin: 'pii-guard', key: 'configVersion' } as const
 const reviewAtom = atom({ plugin: 'pii-guard', key: 'review' } as const, null as Review | null)
+const queueAtom = atom({ plugin: 'pii-guard', key: 'queue' } as const, [] as Review[])
 const sessionAllowsAtom = atom({ plugin: 'pii-guard', key: 'sessionAllows' } as const, [] as string[])
 const settingsOpenAtom = atom({ plugin: 'pii-guard', key: 'settingsOpen' } as const, false)
+
+const PLACEHOLDER_NOTE =
+  'pii-guard: bracketed placeholders such as [EMAIL_1] or [CARD_2] stand for values the person chose to redact. ' +
+  'The same placeholder always means the same value. Do not try to reconstruct them, and never write a placeholder into a file or code in place of the real value: tell the person instead.'
 
 // `$` may not cross an import, so the two config calls that touch it live here.
 async function loadConfig($: EngineInterface): Promise<Config> {
@@ -30,17 +35,19 @@ async function saveConfig($: EngineInterface, config: Config): Promise<void> {
   await $.state.set(configVersion, value + 1)
 }
 
-type Outcome = 'send' | 'cancel'
-let pending: ((o: Outcome) => void) | null = null
-const settle = (o: Outcome) => { const p = pending; pending = null; p?.(o) }
-// Decisions are mirrored here because a hook's state reads all see the moment
-// its dispatch began: presses that land while it awaits are invisible to it.
-let liveDecisions: Record<string, Decision> = {}
+/** Whether somebody is at a keyboard; set by session.start, true until it says otherwise. */
+let interactive = true
+
+/** Set once anything was redacted this session: the model then gets a standing note about placeholders. */
+let everRedacted = false
+
+/** What the last sent prompt agreed, for file attachments the engine raises after it. */
+let agreed: { decisions: Record<string, Decision>; numbering: Numbering } | null = null
 
 let reviewSeq = 0
 
-function buildReview(kind: Review['kind'], sections: ReviewSection[], findings: Finding[], unscannable: Unscannable[]): Review {
-  return { id: `r${++reviewSeq}`, kind, sections, findings, unscannable, decisions: {}, view: 'review' }
+function buildReview(kind: Review['kind'], original: string, sections: ReviewSection[], findings: Finding[], unscannable: Unscannable[]): Review {
+  return { id: `r${++reviewSeq}-${Date.now()}`, kind, original, sections, findings, unscannable, decisions: {}, view: 'review' }
 }
 
 function sectionOf(id: string, title: string, text: string): ReviewSection {
@@ -52,20 +59,17 @@ const redactAll = (findings: Finding[]): Record<string, Decision> =>
 
 const typeList = (findings: Finding[]) => [...new Set(findings.map(f => f.typeId))].join(', ')
 
-/**
- * What the last prompt's review agreed, for the file attachments that follow it.
- * Attachments are rescanned rather than matched by path: an attachment that
- * cannot be attributed is still redacted (default decision), never passed through.
- */
-let agreed: { decisions: Record<string, Decision>; numbering: Numbering } | null = null
+const sectionText = (review: Review, id: string) => review.sections.find(s => s.id === id)?.text ?? ''
 
-const MENTION_RE = /(?<![\w@])@((?:"[^"\n]+")|(?:[^\s"'`,;:!?()[\]{}<>]+))/g
+/** `@path` as typed: quoted, or a run up to whitespace with trailing punctuation dropped. */
+const MENTION_RE = /(?<![\w@])@(?:"([^"\n]+)"|([^\s"]+))/g
 
 async function mentionedFiles($: EngineInterface, text: string): Promise<{ path: string; text: string }[]> {
   const out: { path: string; text: string }[] = []
   const seen = new Set<string>()
   for (const m of text.matchAll(MENTION_RE)) {
-    let raw = m[1]!.replace(/^"|"$/g, '')
+    let raw = m[1] ?? m[2] ?? ''
+    if (!m[1]) raw = raw.replace(/[.,;:!?)\]}>]+$/, '')
     raw = raw.replace(/#L\d+(?:-\d+)?$/, '')
     if (!raw || seen.has(raw)) continue
     seen.add(raw)
@@ -79,51 +83,92 @@ async function mentionedFiles($: EngineInterface, text: string): Promise<{ path:
   return out
 }
 
-/** Shows the review pane, waits for Send / Cancel / close, applies session allows. */
-async function runReview($: EngineInterface, review: Review): Promise<{ outcome: Outcome; decisions: Record<string, Decision> }> {
-  settle('cancel') // a stale pending review loses
-  liveDecisions = {}
+async function isSlashCommand($: EngineInterface, text: string): Promise<boolean> {
+  const m = /^\s*\/([A-Za-z0-9_:-]+)/.exec(text)
+  if (!m) return false
+  try {
+    const names = new Set((await $.command.list()).map(c => c.name))
+    return names.has(m[1]!)
+  } catch {
+    return false
+  }
+}
+
+/** Shows `review` in the pane now, or queues it behind the one shown. */
+async function showOrQueue($: EngineInterface, review: Review): Promise<void> {
+  const current = await read($, reviewAtom)
+  if (current) {
+    await update($, queueAtom, q => [...q, review])
+    return
+  }
   await update($, settingsOpenAtom, () => false)
   await update($, reviewAtom, () => review)
-  const outcomeP = new Promise<Outcome>(resolve => { pending = resolve })
-  let outcome: Outcome
-  try {
-    const opened = await $.ui.open({
-      id: PANE_ID,
-      title: review.kind === 'tool' ? 'PII review (Read)' : 'PII review',
-      focus: true, closeOnEscape: true, holdToasts: true, rows: 24,
-    })
-    if (!opened.isPlaced) {
-      const answer = await $.ui.ask(
-        `pii-guard found ${review.findings.length} PII value(s) but cannot show the review pane (${opened.reason}). What now?`,
-        ['Redact all and continue', 'Cancel'],
-      ).catch(() => 'Cancel')
-      settle(answer === 'Redact all and continue' ? 'send' : 'cancel')
-    }
-    outcome = await outcomeP
-  } finally {
-    pending = null
+  const opened = await $.ui.open({ id: PANE_ID, title: 'PII review', focus: true, closeOnEscape: true, holdToasts: true, rows: 24 })
+  if (!opened.isPlaced) $.ui.toast(`pii-guard: a prompt is held for review but the pane cannot be shown (${opened.reason}). Run /pii to open it.`)
+}
+
+/** Takes the shown review down and brings the next queued one up, or closes the pane. */
+async function advance($: EngineInterface): Promise<void> {
+  const q = await read($, queueAtom)
+  const [nextReview, ...rest] = q
+  await update($, queueAtom, () => rest)
+  await update($, reviewAtom, () => nextReview ?? null)
+  if (nextReview) {
+    await $.ui.open({ id: PANE_ID, title: 'PII review', focus: true, closeOnEscape: true, holdToasts: true, rows: 24 })
+  } else if (!(await read($, settingsOpenAtom))) {
+    await $.ui.close({ id: PANE_ID }).catch(() => undefined)
   }
-  const decisions = { ...liveDecisions }
-  liveDecisions = {}
-  await update($, reviewAtom, () => null)
-  await $.ui.close({ id: PANE_ID }).catch(() => undefined)
-  if (outcome === 'send') {
-    const allows = Object.entries(decisions).filter(([, d]) => d === 'allow-session').map(([id]) => id)
-    if (allows.length) await update($, sessionAllowsAtom, l => [...new Set([...l, ...allows])])
+}
+
+async function rememberAllows($: EngineInterface, decisions: Record<string, Decision>): Promise<void> {
+  const allows = Object.entries(decisions).filter(([, d]) => d === 'allow-session').map(([id]) => id)
+  if (allows.length) await update($, sessionAllowsAtom, l => [...new Set([...l, ...allows])])
+}
+
+/** Send: redact the held prompt and its files per the decisions, resubmit as the person's own words. */
+async function sendReview($: EngineInterface, review: Review): Promise<void> {
+  const config = await loadConfig($)
+  const ph = (id: string) => placeholderFor(config, id)
+  const decisions = review.decisions
+  const promptFindings = review.findings.filter(f => f.section === 'prompt')
+  const r = redact(review.original, promptFindings, decisions, {}, ph)
+  let numbering = r.numbering
+  let count = r.count
+  // A plugin's prompt has no @file expansion and its own hooks do not see it, so the
+  // files the person mentioned ride along in the text, redacted per the decisions.
+  const blocks: string[] = []
+  for (const section of review.sections) {
+    if (!section.id.startsWith('file:')) continue
+    const found = review.findings.filter(f => f.section === section.id)
+    const fr = redact(section.text, found, decisions, numbering, ph)
+    numbering = fr.numbering
+    count += fr.count
+    blocks.push(`--- ${section.title}${fr.count ? ` (${fr.count} value(s) redacted by pii-guard)` : ''} ---\n${fr.text}\n--- end ${section.title} ---`)
   }
-  return { outcome, decisions }
+  if (count) everRedacted = true
+  await rememberAllows($, decisions)
+  agreed = { decisions, numbering }
+  await advance($)
+  if (count) $.ui.toast(`pii-guard redacted ${count} value(s)`)
+  const text = blocks.length ? `${r.text}\n\n${blocks.join('\n\n')}` : r.text
+  await $.prompt.submit({ text, asUser: true })
+}
+
+async function cancelReview($: EngineInterface): Promise<void> {
+  await advance($)
+  $.ui.toast('Prompt cancelled in PII review')
 }
 
 function actionsFor($: EngineInterface): PaneActions {
   const edit = async (fn: (c: Config) => Config) => saveConfig($, fn(await loadConfig($)))
+  const withReview = (fn: (r: Review) => Promise<void>) => void (async () => {
+    const r = await read($, reviewAtom)
+    if (r) await fn(r)
+  })()
   return {
-    decide: (typeId, d: Decision) => {
-      liveDecisions = { ...liveDecisions, [typeId]: d }
-      void update($, reviewAtom, r => r ? { ...r, decisions: { ...r.decisions, [typeId]: d } } : r)
-    },
-    send: () => settle('send'),
-    cancel: () => settle('cancel'),
+    decide: (typeId, d: Decision) => void update($, reviewAtom, r => r ? { ...r, decisions: { ...r.decisions, [typeId]: d } } : r),
+    send: () => withReview(r => sendReview($, r)),
+    cancel: () => withReview(() => cancelReview($)),
     openSettings: () => void update($, settingsOpenAtom, () => true),
     closeSettings: () => void (async () => {
       await update($, settingsOpenAtom, () => false)
@@ -140,6 +185,7 @@ function actionsFor($: EngineInterface): PaneActions {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
+    interactive = e.isInteractive
     await $.command.register({
       name: 'pii',
       description: 'PII guard: settings, patterns, watchlist and allowlist',
@@ -151,6 +197,7 @@ export const register: Register = on => {
 
   on('tool.call', { tool: 'mcp__pii-guard__pii_patterns' }, async ($, e) => {
     const { tool, tool_use_id, consent, agentId, requestMeta, ...input } = e as unknown as Record<string, unknown>
+    if (agentId) return { result: { ok: false, message: 'pii_patterns is not available to subagents' } }
     const outcome = runPatternsTool(await loadConfig($), input)
     if (outcome.config) await saveConfig($, outcome.config)
     return { result: outcome.answer }
@@ -167,14 +214,29 @@ export const register: Register = on => {
     return { text: outcome.text }
   })
 
+  // The person closing the pane (close mark, Escape) while a prompt is held cancels it.
   on('ui.close', { id: PANE_ID }, async ($, e, next) => {
-    if (e.origin.kind === 'person' && pending) settle('cancel')
+    if (e.origin.kind === 'person') {
+      const current = await read($, reviewAtom)
+      if (current?.kind === 'prompt') {
+        await update($, queueAtom, () => [])
+        await update($, reviewAtom, () => null)
+        $.ui.toast('Prompt cancelled in PII review')
+      }
+    }
     return next(e)
+  })
+
+  // Once anything was redacted, the system prompt carries a standing note about placeholders.
+  on('prompt.compose', async ($, e, next) => {
+    const { sections } = await next(e)
+    if (!everRedacted) return { sections }
+    return { sections: [...sections, { id: 'pii-guard:placeholders', text: PLACEHOLDER_NOTE, scope: 'session' as const }] }
   })
 
   on('prompt.submit', async ($, e, next) => {
     if (e.origin.kind === 'plugin') return next(e)
-    if (/^\s*\//.test(e.text)) return next(e)
+    if (await isSlashCommand($, e.text)) return next(e)
     agreed = null
     try {
       const config = await loadConfig($)
@@ -191,23 +253,40 @@ export const register: Register = on => {
 
       const ph = (id: string) => placeholderFor(config, id)
       const promptFindings = findings.filter(f => f.section === 'prompt')
-      if (e.origin.kind === 'sdk') {
+      const redactEverything = () => {
         const all = redactAll(findings)
         const r = redact(e.text, promptFindings, all, {}, ph)
         agreed = { decisions: all, numbering: r.numbering }
-        $.ui.log(`pii-guard: headless run, redacted ${r.count} value(s) of ${typeList(findings)}`, { to: 'debug' })
-        return next({ ...e, text: r.text })
+        if (r.count) everRedacted = true
+        return next({ ...e, text: r.text, context: r.count ? [...(e.context ?? []), PLACEHOLDER_NOTE] : e.context })
       }
 
-      const { outcome, decisions } = await runReview($, buildReview('prompt', sections, findings, unscannable))
-      if (outcome === 'cancel') {
-        $.ui.toast('Prompt cancelled in PII review')
+      if (!interactive) {
+        $.ui.log(`pii-guard: non-interactive session, redacted ${promptFindings.length} value(s) of ${typeList(findings)}`, { to: 'debug' })
+        return redactEverything()
+      }
+
+      if (unscannable.length > 0) {
+        // Attachments cannot survive a resubmit, so this prompt is decided in the
+        // engine's dialog (a `$` call, which does not count against the hook's time)
+        // while the pane shows what was found.
+        const review = buildReview('prompt', e.text, sections, findings, unscannable)
+        await update($, settingsOpenAtom, () => false)
+        await update($, reviewAtom, () => review)
+        await $.ui.open({ id: PANE_ID, title: 'PII review', holdToasts: true, rows: 24 })
+        const what = `${unscannable.length} attachment(s) that cannot be scanned` + (findings.length ? ` and ${findings.length} PII value(s) in the text (${typeList(findings)})` : '')
+        const options = findings.length ? ['Redact text and send', 'Send everything as-is', 'Cancel'] : ['Send', 'Cancel']
+        const answer = await $.ui.ask(`pii-guard: this prompt carries ${what}. What now?`, { options, header: 'PII guard' }).catch(() => 'Cancel')
+        await update($, reviewAtom, () => null)
+        await $.ui.close({ id: PANE_ID }).catch(() => undefined)
+        if (answer === 'Cancel') return { drop: 'Cancelled in PII review' }
+        if (answer === 'Redact text and send') return redactEverything()
+        if (answer === 'Send everything as-is' || answer === 'Send') return next(e)
         return { drop: 'Cancelled in PII review' }
       }
-      const r = redact(e.text, promptFindings, decisions, {}, ph)
-      agreed = { decisions, numbering: r.numbering }
-      if (r.count) $.ui.toast(`pii-guard redacted ${r.count} value(s)`)
-      return next({ ...e, text: r.text })
+
+      await showOrQueue($, buildReview('prompt', e.text, sections, findings, unscannable))
+      return { drop: 'Held for PII review' }
     } catch (err) {
       $.ui.log(`pii-guard: prompt.submit failed, prompt held: ${(err as Error).message}`, { to: 'debug' })
       try { $.ui.toast('pii-guard failed, prompt held. See debug log.') } catch { /* no surface */ }
@@ -215,32 +294,58 @@ export const register: Register = on => {
     }
   }).catch(($, e, next) => (next.called ? next(e) : { drop: 'pii-guard failed; prompt held' }))
 
+  // Opt-in: a Read result with PII is decided in the engine's dialog (a `$` call) while
+  // the pane shows the hit. Any failure after the read ran withholds the result.
   on('tool.call', { tool: 'Read' }, async ($, e, next) => {
     const ran = await next(e)
     if (ran.deny !== undefined || ran.isError || e.agentId) return ran
-    const config = await loadConfig($)
-    if (!config.scanToolReads) return ran
-    const record = ran.result as { type?: string; file?: { content?: string } } | undefined
-    const content = record?.type === 'text' && typeof record.file?.content === 'string' ? record.file.content : undefined
-    if (content === undefined) return ran
-    const sessionAllows = await read($, sessionAllowsAtom)
-    const sectionId = `tool:${e.tool_use_id ?? 'read'}`
-    const findings = scan(content, sectionId, config, { sessionAllows })
-    if (findings.length === 0) return ran
-    const review = buildReview('tool', [sectionOf(sectionId, `Read ${e.file_path}`, content)], findings, [])
-    const { outcome, decisions } = await runReview($, review)
-    if (outcome === 'cancel') return { deny: 'Read result withheld in PII review' }
-    const r = redact(content, findings, decisions, {}, id => placeholderFor(config, id))
-    if (r.count === 0) return ran
-    const file = (ran.result as { file: Record<string, unknown> }).file
-    return {
-      result: { ...(ran.result as object), file: { ...file, content: r.text } } as typeof ran.result,
-      context: [`pii-guard redacted ${r.count} value(s) in this file before you read it. Placeholders like [NINO_1] stand for real values; do not try to reconstruct them.`],
+    try {
+      const config = await loadConfig($)
+      if (!config.scanToolReads) return ran
+      const record = ran.result as { type?: string; file?: { content?: string } } | undefined
+      const content = record?.type === 'text' && typeof record.file?.content === 'string' ? record.file.content : undefined
+      if (content === undefined) return ran
+      const sessionAllows = await read($, sessionAllowsAtom)
+      const sectionId = `tool:${e.tool_use_id ?? 'read'}`
+      const findings = scan(content, sectionId, config, { sessionAllows })
+      if (findings.length === 0) return ran
+
+      const review = buildReview('tool', '', [sectionOf(sectionId, `Read ${e.file_path}`, content)], findings, [])
+      const held = await read($, reviewAtom)
+      if (!held) {
+        await update($, settingsOpenAtom, () => false)
+        await update($, reviewAtom, () => review)
+        await $.ui.open({ id: PANE_ID, title: 'PII review (Read)', holdToasts: true, rows: 24 })
+      }
+      const answer = await $.ui.ask(
+        `pii-guard: the Read of ${e.file_path} holds ${findings.length} PII value(s) (${typeList(findings)}). What should Claude see?`,
+        { options: ['Redact and continue', 'Allow once', 'Allow this session', 'Withhold'], header: 'PII guard' },
+      ).catch(() => 'Withhold')
+      if (!held) {
+        await update($, reviewAtom, () => null)
+        await $.ui.close({ id: PANE_ID }).catch(() => undefined)
+      }
+      if (answer === 'Allow once') return ran
+      if (answer === 'Allow this session') {
+        await update($, sessionAllowsAtom, l => [...new Set([...l, ...findings.map(f => f.typeId)])])
+        return ran
+      }
+      if (answer !== 'Redact and continue') return { deny: 'Read result withheld in PII review' }
+      const r = redact(content, findings, redactAll(findings), {}, id => placeholderFor(config, id))
+      everRedacted = true
+      const file = (ran.result as { file: Record<string, unknown> }).file
+      return {
+        result: { ...(ran.result as object), file: { ...file, content: r.text } } as typeof ran.result,
+        context: [`pii-guard redacted ${r.count} value(s) in this file before you read it. ${PLACEHOLDER_NOTE}`],
+      }
+    } catch (err) {
+      $.ui.log(`pii-guard: Read gate failed, result withheld: ${(err as Error).message}`, { to: 'debug' })
+      return { deny: 'pii-guard failed; Read withheld' }
     }
-  }).catch(($, e, next) => (next.called ? next(e) : { deny: 'pii-guard failed; Read withheld' }))
+  }).catch(() => ({ deny: 'pii-guard failed; Read withheld' }))
 
   // Every main-loop file attachment is rescanned with the current config; the
-  // decisions are the ones the prompt's review agreed, redact for anything else.
+  // decisions are the ones the last sent prompt agreed, redact for anything else.
   on('prompt.attachment', { type: 'file' }, async ($, e, next) => {
     if (e.agentId) return next(e)
     const config = await loadConfig($)
@@ -249,13 +354,14 @@ export const register: Register = on => {
     if (findings.length === 0) return next(e)
     const r = redact(e.text, findings, agreed?.decisions ?? {}, agreed?.numbering ?? {}, id => placeholderFor(config, id))
     if (agreed) agreed = { ...agreed, numbering: r.numbering }
+    if (r.count) { everRedacted = true; $.ui.toast(`pii-guard redacted ${r.count} value(s) in an attached file`) }
     return next({ ...e, text: r.text })
   }).catch(($, e, next) => (next.called ? next(e) : { text: null }))
 
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) => {
     const E = paneElements($.ui.resolve(e))
-    const [review, allows, settingsOpen, config] = await Promise.all([
-      read($, reviewAtom), read($, sessionAllowsAtom), read($, settingsOpenAtom), loadConfig($),
+    const [review, queue, allows, settingsOpen, config] = await Promise.all([
+      read($, reviewAtom), read($, queueAtom), read($, sessionAllowsAtom), read($, settingsOpenAtom), loadConfig($),
     ])
     // Subscribes this drawing to config saves, which bump configVersion.
     await $.state.get(configVersion)
@@ -263,6 +369,6 @@ export const register: Register = on => {
     if (settingsOpen || !review) {
       return renderSettings(E, config, allows, review !== null, actions)
     }
-    return renderReview(E, review, config, actions)
+    return renderReview(E, review, config, actions, queue.length)
   })
 }
