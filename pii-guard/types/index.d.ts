@@ -12,6 +12,8 @@ export type PiiType = {
   patterns: string[]
   validator: Validator
   placeholder: string
+  /** Compile patterns without the i flag (the name heuristic relies on case). */
+  caseSensitive?: true
 }
 
 export type Config = {

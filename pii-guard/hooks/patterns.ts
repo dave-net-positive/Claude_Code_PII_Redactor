@@ -103,10 +103,10 @@ export const BUILTIN_TYPES: PiiType[] = [
     String.raw`\b(?:diagnos(?:is|ed|es)|prescri(?:ption|bed)|medication|chemotherapy|psychiatric|HIV|hepatitis|diabet(?:es|ic)|epilep(?:sy|tic)|schizophreni[ac]|bipolar|dementia|cancer)\b`,
     String.raw`(?<=\bICD(?:-10)?[:\s]{1,3})[A-Z]\d{2}(?:\.\d{1,2})?\b`,
   ]),
-  t('name', 'Personal name', 'identity', 'NAME', [
+  { ...t('name', 'Personal name', 'identity', 'NAME', [
     String.raw`\b(?:Mr|Mrs|Ms|Miss|Dr|Prof|Sir|Dame)\.? [A-Z][a-z]+(?: [A-Z][a-z]+)?\b`,
     String.raw`(?<![.!?]\s)(?<!^)\b[A-Z][a-z]{1,}(?:[-'][A-Z][a-z]+)? [A-Z][a-z]{1,}\b`,
-  ]),
+  ]), caseSensitive: true },
 ]
 
 export const DEFAULT_ALLOWLIST: string[] = [
