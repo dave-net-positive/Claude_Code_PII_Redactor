@@ -64,7 +64,7 @@ From the mod API types shipped with this build:
 ## Files
 
 ```
-~/.claude/dev-mods/<session>/pii-guard/
+<repo>/pii-guard/
   .claude-plugin/plugin.json      name, version, description, "types": "./types/index.d.ts"
   hooks/hooks.json                { "modules": ["./register.tsx"] }
   hooks/register.tsx              event wiring only
