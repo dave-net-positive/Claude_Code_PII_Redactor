@@ -1,0 +1,6 @@
+{
+  "name": "pii-guard",
+  "version": "0.1.0",
+  "description": "Holds prompts, @file contents and Read results that contain PII or secrets behind a review pane with per-type allow/redact decisions.",
+  "types": "./types/index.d.ts"
+}

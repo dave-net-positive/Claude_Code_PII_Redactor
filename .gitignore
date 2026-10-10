@@ -7,3 +7,5 @@ node_modules/
 *.tsbuildinfo
 .DS_Store
 Thumbs.db
+.superpowers/
+pii-guard/.claude-plugin/types/
