@@ -130,11 +130,20 @@ test('mentioned file is scanned, shown, and redacted at attachment time', async 
   const att = await $.prompt.attachment({ type: 'file', text: framed, origin: { kind: 'engine' } } as never)
   expect(att).toEqual({ text: framed.replace('joanna@example.com', '[EMAIL_1]') })
 
+  // A repeat attachment is rescanned with the same decisions, never passed through on a missed match.
   const again = await $.prompt.attachment({ type: 'file', text: framed, origin: { kind: 'engine' } } as never)
-  expect(again).toEqual({ text: framed })
+  expect(again).toEqual({ text: framed.replace('joanna@example.com', '[EMAIL_1]') })
+
+  // A file attachment that was not read ahead (unattributable) is still scanned and redacted.
+  const stray = await $.prompt.attachment({ type: 'file', text: 'other.txt\ncard 4111 1111 1111 1111', origin: { kind: 'engine' } } as never)
+  expect(stray).toEqual({ text: 'other.txt\ncard [CARD_1]' })
+
+  // Subagent attachments are left alone in v1.
+  const sub = await $.prompt.attachment({ type: 'file', text: framed, origin: { kind: 'engine' }, agentId: 'a1' } as never)
+  expect(sub).toEqual({ text: framed })
 })
 
-test('a cancelled review leaves no pending file redactions', async ($, on) => {
+test('after a cancelled review a file attachment is redacted by default (fail closed)', async ($, on) => {
   mock.store(on)
   let signal!: () => void
   const opened = new Promise<void>(r => { signal = r })
@@ -150,7 +159,7 @@ test('a cancelled review leaves no pending file redactions', async ($, on) => {
   await ui.press({ key: 'cancel' })
   expect(await run).toEqual({ drop: 'Cancelled in PII review' })
   const att = await $.prompt.attachment({ type: 'file', text: 'x.txt\na@b.co', origin: { kind: 'engine' } } as never)
-  expect(att).toEqual({ text: 'x.txt\na@b.co' })
+  expect(att).toEqual({ text: 'x.txt\n[EMAIL_1]' })
 })
 
 test('skips unreadable mentions and directories', async ($, on) => {
