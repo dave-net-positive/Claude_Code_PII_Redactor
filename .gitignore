@@ -1,0 +1,9 @@
+# local tooling config, not part of the project
+CLAUDE.md
+.claude/
+
+# build and editor output
+node_modules/
+*.tsbuildinfo
+.DS_Store
+Thumbs.db
