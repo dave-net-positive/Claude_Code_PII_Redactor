@@ -1,0 +1,15 @@
+{
+  "name": "net-positive-mods",
+  "description": "Claude Code mods from Net Positive: pii-guard, a PII and secrets review gate.",
+  "owner": {
+    "name": "dave-net-positive",
+    "email": "dave@net-positive.uk"
+  },
+  "plugins": [
+    {
+      "name": "pii-guard",
+      "source": "./pii-guard",
+      "description": "Holds prompts, @file contents and Read results that contain PII or secrets behind a review pane with per-type allow/redact decisions."
+    }
+  ]
+}
