@@ -161,7 +161,7 @@ Redacted values become numbered placeholders, the same value always getting the 
 - Configuration is per user plus an optional organisation policy; there is no per-project layer yet.
 - Image and PDF *content* is never scanned.
 
-See the [design spec](docs/superpowers/specs/2026-10-10-pii-guard-design.md) for the full v1 behaviour and the v2 backlog, and [pii-guard/README.md](pii-guard/README.md) for the mod's own notes.
+See the [changelog](CHANGELOG.md) for what each version added, and the [design spec](docs/superpowers/specs/2026-10-10-pii-guard-design.md) for the full v1 behaviour and the v2 backlog, and [pii-guard/README.md](pii-guard/README.md) for the mod's own notes.
 
 ## Developing
 
