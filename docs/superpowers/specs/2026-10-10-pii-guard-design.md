@@ -505,7 +505,21 @@ tier; `/pii names on|off`. Patterns may start with `(?i)` to run
 case-insensitively inside a case-sensitive type; the `name` type uses this
 for cue phrases ("my name is garry bellows").
 
-### Local-model tier (v1.4, planned)
+### Enterprise enforcement and the user switch (v1.4)
+
+Policy gains `enabled`, `scrubLog`, `nameDictionary` (presence locks) and
+`lists.{watchlist,allowlist}: "locked"|"open"` (freezes a list against any
+user change). A `policyJson` option carries the policy inline; it merges with
+`policyFile`, the file's scalars winning. The managed tier is detected from
+`$.config.list()` rows whose key is the option and `isLocked` is true; the
+pane then shows "Managed by your organisation". Config gains `enabled` (all
+sessions) and state gains `paused` (this session); `/pii pause|resume|
+disable|enable`, settings buttons, and `$.ui.status` while off. The gate,
+the Read gate and the attachment rescan all pass through while inactive. A
+policy `enabled: true` overrides a user disable and hides both switches:
+organisation enforcement always wins.
+
+### Local-model tier (planned, not scheduled)
 
 An opt-in HTTP call to a local NER endpoint (localhost or private address
 only, policy-lockable) whose entities merge as findings. For home use; work

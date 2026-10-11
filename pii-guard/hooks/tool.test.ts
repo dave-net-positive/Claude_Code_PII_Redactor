@@ -3,6 +3,7 @@ import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import * as toolModule from './tool'
 import * as configModule from './config'
+import { emptyLocks } from './policy'
 
 const TOOL = 'mcp__pii-guard__pii_patterns'
 
@@ -104,7 +105,7 @@ test('the tool cannot add a custom type whose id a policy holds', async ($, on) 
   mock.store(on); stub(on)
   const { runPatternsTool } = toolModule
   const user = configModule.defaultConfig()
-  const locks = { watchlist: [], allowlist: [], types: ['custom:acme-ref'], scanToolReads: false }
+  const locks = { ...emptyLocks(), types: ['custom:acme-ref'] }
   const r = runPatternsTool(user, { action: 'add', id: 'acme-ref', regex: 'x+' }, locks)
   expect(r.answer.ok).toBe(false)
   expect(r.answer.message).toMatch(/policy/)

@@ -17,6 +17,8 @@ export type PaneActions = {
   setScanReads(on: boolean): void
   setScrub(on: boolean): void
   setNameDictionary(on: boolean): void
+  setPaused(on: boolean): void
+  setEnabled(on: boolean): void
   revokeSessionAllow(id: string): void
   /** Add this exact value to the allowlist and drop it from the review shown. */
   allowlistValue(typeId: string, value: string): void
@@ -252,7 +254,7 @@ export function renderReview(E: PaneElements, review: Review, config: Config, ac
 
 export function renderSettings(
   E: PaneElements, config: Config, sessionAllows: string[], hasReview: boolean, actions: PaneActions,
-  locks: Locks = emptyLocks(), policy: PolicyStatus | null = null,
+  locks: Locks = emptyLocks(), policy: PolicyStatus | null = null, paused = false,
 ) {
   const { Box, Text, Button, Input } = E
   const byCategory = new Map<string, Config['types']>()
@@ -272,15 +274,34 @@ export function renderSettings(
               : <Button key={`${prefix}:remove:${term}`} label="Remove" plain onPress={() => actions.removeTerm(name, term)} />}
           </Box>
         ))}
-        {Input
-          ? <Input key={`${prefix}:add`} placeholder={hint} submitLabel="Add" onSubmit={v => actions.addTerm(name, v)} />
-          : <Text dimColor>{`Add with /pii ${prefix} <term> (this surface has no text field)`}</Text>}
+        {(name === 'watchlist' ? locks.watchlistFrozen : locks.allowlistFrozen)
+          ? <Text dimColor>{`${LOCK} list managed by policy`}</Text>
+          : Input
+            ? <Input key={`${prefix}:add`} placeholder={hint} submitLabel="Add" onSubmit={v => actions.addTerm(name, v)} />
+            : <Text dimColor>{`Add with /pii ${prefix} <term> (this surface has no text field)`}</Text>}
       </Box>
     )
   }
   return (
     <Box flexDirection="column" padding={1}>
       <Text bold color="warning">PII guard settings</Text>
+      {policy?.managed ? <Text color="warning">{`${LOCK} Managed by your organisation`}</Text> : null}
+      <Box gap={1} marginTop={1}>
+        <Text bold>Gate:</Text>
+        <Text>{!config.enabled ? 'disabled for all sessions' : paused ? 'paused for this session' : 'on'}</Text>
+        {locks.enabled
+          ? <Text dimColor>{`${LOCK} policy`}</Text>
+          : [
+              config.enabled
+                ? (paused
+                    ? <Button key="session:resume" label="Resume" plain onPress={() => actions.setPaused(false)} />
+                    : <Button key="session:pause" label="Pause this session" plain onPress={() => actions.setPaused(true)} />)
+                : null,
+              config.enabled
+                ? <Button key="plugin:disable" label="Disable for all sessions" plain onPress={() => actions.setEnabled(false)} />
+                : <Button key="plugin:enable" label="Enable" plain onPress={() => actions.setEnabled(true)} />,
+            ]}
+      </Box>
       {policy ? (
         <Text dimColor>
           {`${LOCK} Organisation policy: ${policy.path}`}
@@ -333,22 +354,26 @@ export function renderSettings(
       <Box gap={1} marginTop={1}>
         <Text bold>Dictionary names (any-case first name + surname):</Text>
         <Text>{config.nameDictionary ? 'on' : 'off'}</Text>
-        <Button
-          key={config.nameDictionary ? 'names:off' : 'names:on'}
-          label={config.nameDictionary ? 'Turn off' : 'Turn on'}
-          plain
-          onPress={() => actions.setNameDictionary(!config.nameDictionary)}
-        />
+        {locks.nameDictionary
+          ? <Text dimColor>{`${LOCK} policy`}</Text>
+          : <Button
+              key={config.nameDictionary ? 'names:off' : 'names:on'}
+              label={config.nameDictionary ? 'Turn off' : 'Turn on'}
+              plain
+              onPress={() => actions.setNameDictionary(!config.nameDictionary)}
+            />}
       </Box>
       <Box gap={1} marginTop={1}>
         <Text bold>Scrub the local session log after a redaction:</Text>
         <Text>{config.scrubLog ? 'on' : 'off'}</Text>
-        <Button
-          key={config.scrubLog ? 'scrub:off' : 'scrub:on'}
-          label={config.scrubLog ? 'Turn off' : 'Turn on'}
-          plain
-          onPress={() => actions.setScrub(!config.scrubLog)}
-        />
+        {locks.scrubLog
+          ? <Text dimColor>{`${LOCK} policy`}</Text>
+          : <Button
+              key={config.scrubLog ? 'scrub:off' : 'scrub:on'}
+              label={config.scrubLog ? 'Turn off' : 'Turn on'}
+              plain
+              onPress={() => actions.setScrub(!config.scrubLog)}
+            />}
       </Box>
       {sessionAllows.length > 0 ? (
         <Box flexDirection="column" marginTop={1}>

@@ -74,3 +74,24 @@ test('a policy watchlist term cannot be neutralised by the user allowlist', asyn
   expect(lockReason(locks, { kind: 'allowlist-add', term: 'ACME Ltd' })).toMatch(/watchlist/)
   expect(lockReason(locks, { kind: 'allowlist-add', term: 'foo' })).toBe(null)
 })
+
+test('v1.4 policy keys: enabled, scrubLog, nameDictionary and frozen lists', async () => {
+  const { policy: p, errors } = parsePolicy({ enabled: true, scrubLog: false, nameDictionary: false, lists: { watchlist: 'locked', allowlist: 'locked' } })
+  expect(errors).toEqual([])
+  const user = { ...defaultConfig(), enabled: false, scrubLog: true, nameDictionary: true, watchlist: ['Joanna'], allowlist: ['foo'] }
+  const { config, locks } = applyPolicy(user, p)
+  expect(config.enabled).toBe(true)
+  expect(config.scrubLog).toBe(false)
+  expect(config.nameDictionary).toBe(false)
+  expect(locks.enabled && locks.scrubLog && locks.nameDictionary && locks.watchlistFrozen && locks.allowlistFrozen).toBe(true)
+  expect(lockReason(locks, { kind: 'enabled' })).toMatch(/policy/)
+  expect(lockReason(locks, { kind: 'scrubLog' })).toMatch(/policy/)
+  expect(lockReason(locks, { kind: 'nameDictionary' })).toMatch(/policy/)
+  expect(lockReason(locks, { kind: 'watchlist', term: 'Joanna' })).toMatch(/policy/)
+  expect(lockReason(locks, { kind: 'watchlist-add', term: 'New' })).toMatch(/policy/)
+  expect(lockReason(locks, { kind: 'allowlist', term: 'foo' })).toMatch(/policy/)
+  expect(lockReason(locks, { kind: 'allowlist-add', term: 'bar' })).toMatch(/policy/)
+  const open = applyPolicy(user, parsePolicy({}).policy).locks
+  expect(lockReason(open, { kind: 'enabled' })).toBe(null)
+  expect(lockReason(open, { kind: 'watchlist-add', term: 'New' })).toBe(null)
+})

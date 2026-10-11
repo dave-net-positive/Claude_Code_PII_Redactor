@@ -8,19 +8,29 @@ const strings = (v: unknown): string[] =>
 const ID_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/
 
 export function emptyLocks(): Locks {
-  return { watchlist: [], allowlist: [], types: [], scanToolReads: false }
+  return { watchlist: [], allowlist: [], types: [], scanToolReads: false, scrubLog: false, nameDictionary: false, enabled: false, watchlistFrozen: false, allowlistFrozen: false }
 }
 
 /** Reads a policy document as an administrator wrote it; unknown keys are ignored, bad entries reported. */
 export function parsePolicy(raw: unknown): { policy: Policy; errors: string[] } {
   const errors: string[] = []
-  const policy: Policy = { watchlist: [], allowlist: [], types: {}, customTypes: [] }
+  const policy: Policy = { watchlist: [], allowlist: [], types: {}, customTypes: [], lists: {} }
   if (raw === undefined || raw === null) return { policy, errors }
   if (!isRecord(raw)) return { policy, errors: ['policy file is not a JSON object'] }
 
   policy.watchlist = strings(raw.watchlist)
   policy.allowlist = strings(raw.allowlist).map(s => s.toLowerCase())
   if (typeof raw.scanToolReads === 'boolean') policy.scanToolReads = raw.scanToolReads
+  if (typeof raw.scrubLog === 'boolean') policy.scrubLog = raw.scrubLog
+  if (typeof raw.nameDictionary === 'boolean') policy.nameDictionary = raw.nameDictionary
+  if (typeof raw.enabled === 'boolean') policy.enabled = raw.enabled
+  if (isRecord(raw.lists)) {
+    for (const list of ['watchlist', 'allowlist'] as const) {
+      const v = raw.lists[list]
+      if (v === 'locked' || v === 'open') policy.lists[list] = v
+      else if (v !== undefined) errors.push(`lists.${list}: expected "locked" or "open"`)
+    }
+  }
 
   if (isRecord(raw.types)) {
     for (const [id, v] of Object.entries(raw.types)) {
@@ -64,6 +74,11 @@ export function applyPolicy(user: Config, policy: Policy): { config: Config; loc
     allowlist: policy.allowlist.map(lower),
     types: [...Object.keys(policy.types), ...policy.customTypes.map(t => t.id)],
     scanToolReads: policy.scanToolReads !== undefined,
+    scrubLog: policy.scrubLog !== undefined,
+    nameDictionary: policy.nameDictionary !== undefined,
+    enabled: policy.enabled !== undefined,
+    watchlistFrozen: policy.lists.watchlist === 'locked',
+    allowlistFrozen: policy.lists.allowlist === 'locked',
   }
   const have = (list: string[], term: string) => list.some(x => lower(x) === lower(term))
   const watchlist = [...user.watchlist, ...policy.watchlist.filter(t => !have(user.watchlist, t))]
@@ -79,6 +94,9 @@ export function applyPolicy(user: Config, policy: Policy): { config: Config; loc
     allowlist,
     types: [...types, ...policy.customTypes],
     scanToolReads: policy.scanToolReads ?? user.scanToolReads,
+    scrubLog: policy.scrubLog ?? user.scrubLog,
+    nameDictionary: policy.nameDictionary ?? user.nameDictionary,
+    enabled: policy.enabled ?? user.enabled,
   }
   return { config, locks }
 }
@@ -87,9 +105,13 @@ export type LockedChange =
   | { kind: 'type'; id: string }
   | { kind: 'watchlist'; term: string }
   | { kind: 'allowlist'; term: string }
-  /** Adding a term to the allowlist: refused when it would silence a policy watchlist name. */
+  /** Adding a term to the allowlist: refused when it would silence a policy watchlist name, or the list is frozen. */
   | { kind: 'allowlist-add'; term: string }
+  | { kind: 'watchlist-add'; term: string }
   | { kind: 'scanToolReads' }
+  | { kind: 'scrubLog' }
+  | { kind: 'nameDictionary' }
+  | { kind: 'enabled' }
 
 /** Why a change is refused under `locks`, or null when the person may make it. */
 export function lockReason(locks: Locks, change: LockedChange): string | null {
@@ -101,12 +123,23 @@ export function lockReason(locks: Locks, change: LockedChange): string | null {
       return held ? `${change.id} is set by your organisation's policy` : null
     }
     case 'watchlist':
+      if (locks.watchlistFrozen) return 'the watchlist is managed by your organisation\'s policy'
       return locks.watchlist.includes(lower(change.term)) ? `"${change.term}" is on the policy watchlist` : null
+    case 'watchlist-add':
+      return locks.watchlistFrozen ? 'the watchlist is managed by your organisation\'s policy' : null
     case 'allowlist':
+      if (locks.allowlistFrozen) return 'the allowlist is managed by your organisation\'s policy'
       return locks.allowlist.includes(lower(change.term)) ? `"${change.term}" is on the policy allowlist` : null
     case 'allowlist-add':
+      if (locks.allowlistFrozen) return 'the allowlist is managed by your organisation\'s policy'
       return locks.watchlist.includes(lower(change.term)) ? `"${change.term}" is on the policy watchlist and cannot be allowlisted` : null
     case 'scanToolReads':
       return locks.scanToolReads ? 'Read scanning is set by your organisation\'s policy' : null
+    case 'scrubLog':
+      return locks.scrubLog ? 'the log scrub is set by your organisation\'s policy' : null
+    case 'nameDictionary':
+      return locks.nameDictionary ? 'the name dictionary is set by your organisation\'s policy' : null
+    case 'enabled':
+      return locks.enabled ? 'pii-guard is enforced by your organisation\'s policy and cannot be paused or disabled' : null
   }
 }

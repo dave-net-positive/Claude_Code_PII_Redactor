@@ -74,7 +74,7 @@ All start enabled. Turn off the ones a project tolerates.
 ## Configuration
 
 - **In the review itself** every detected value has an **Allowlist** button, and each word of a flagged name pair has its own, so one press on "Microsoft" stops every Microsoft product being flagged again. When nothing is left to review the prompt is sent as typed.
-- **`/pii`** opens the settings pane: toggle types, edit the names watchlist and the false-positive allowlist, turn Read scanning on, turn the local log scrub off. A single-word allowlist entry suppresses any name pair that contains it; the default list covers common vendors, products, places and days.
+- **`/pii`** opens the settings pane: toggle types, edit the names watchlist and the false-positive allowlist, turn Read scanning on, turn the local log scrub or the name dictionary off, pause or disable the gate. A single-word allowlist entry suppresses any name pair that contains it; the default list covers common vendors, products, places and days.
 - **`/pii add <id> <regex>`** adds a custom type. **`/pii test <id|regex> <sample text>`** shows what a pattern matches. **`/pii list`** shows everything.
 - **Ask Claude.** "Add a pattern for our ticket ids like REF-123456" makes Claude use the `pii_patterns` tool to test a regex against samples and add it. The tool can only strengthen the guard (list, test, add a type, add a watchlist name, turn a type on). Turning types off, removing them, allowlisting and unwatching are yours alone through `/pii`, so an injected instruction cannot switch the guard off.
 
@@ -100,24 +100,46 @@ An administrator can push settings that users cannot change. Point the mod at a 
 }
 ```
 
-The policy file is JSON; every key is optional:
+No file to distribute? Put the same JSON in the `policyJson` option as a string instead. When both are set they merge, the file's scalar settings winning.
+
+The policy is JSON; every key is optional:
 
 ```json
 {
   "version": 1,
+  "enabled": true,
   "watchlist": ["Acme Ltd", "Project Nightjar"],
   "allowlist": ["acme code"],
+  "lists": { "watchlist": "locked", "allowlist": "open" },
   "types": { "email": { "enabled": true }, "name": { "enabled": false } },
   "customTypes": [
     { "id": "acme-ref", "label": "Acme reference", "regex": "\\bACME-\\d{6}\\b", "placeholder": "ACMEREF" }
   ],
-  "scanToolReads": true
+  "scanToolReads": true,
+  "scrubLog": true,
+  "nameDictionary": true
 }
 ```
 
-Everything the policy names is overlaid on each user's own settings and **locked**: the settings pane shows a lock instead of a button, and `/pii` and the `pii_patterns` tool refuse to change it. Anything the policy does not mention stays the user's to set. The file is re-read whenever its modification time changes, so an edit lands without a restart. If the path is set but the file is missing or malformed, the user sees one warning per session and their own settings apply alone; a broken policy never blocks prompts.
+Everything the policy names is overlaid on each user's own settings and **locked**: the settings pane shows a lock instead of a button, and `/pii` and the `pii_patterns` tool refuse to change it. Anything the policy does not mention stays the user's to set.
+
+- `enabled: true` enforces the gate: the user's pause and disable switches disappear, and a user who had disabled the mod earlier has it back on the moment the policy arrives.
+- `lists` set to `locked` forbids any user addition or removal on that list, not just the policy's own entries. A policy watchlist name can never be allowlisted whatever the list mode.
+- `types` forces a type on or off; `scanToolReads`, `scrubLog` and `nameDictionary` force those switches.
+
+The file is re-read whenever its modification time changes, so an edit lands without a restart. If the path is set but the file is missing or malformed, the user sees one warning per session and the rest of the policy, or their own settings, apply; a broken policy never blocks prompts. When the option comes from managed settings the pane says "Managed by your organisation".
 
 Distribute the file by MDM, a share, or a repo checkout. Keep it readable by the user account Claude Code runs as.
+
+## Switching the gate off
+
+Without a managed policy you can step out of the way of the gate:
+
+- `/pii pause` and `/pii resume`: this session only. A status line reads `pii-guard paused` while it is off.
+- `/pii disable` and `/pii enable`: every session, remembered.
+- The same switches are in the settings pane. While off, prompts, `@file` contents and Read results pass untouched and nothing is scrubbed.
+
+Under a managed policy with `enabled: true` neither switch exists.
 
 ## What is and isn't protected
 

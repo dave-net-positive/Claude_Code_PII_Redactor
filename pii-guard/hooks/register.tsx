@@ -21,6 +21,7 @@ const reviewAtom = atom({ plugin: 'pii-guard', key: 'review' } as const, null as
 const queueAtom = atom({ plugin: 'pii-guard', key: 'queue' } as const, [] as Review[])
 const sessionAllowsAtom = atom({ plugin: 'pii-guard', key: 'sessionAllows' } as const, [] as string[])
 const settingsOpenAtom = atom({ plugin: 'pii-guard', key: 'settingsOpen' } as const, false)
+const pausedAtom = atom({ plugin: 'pii-guard', key: 'paused' } as const, false)
 
 const PLACEHOLDER_NOTE =
   'pii-guard: bracketed placeholders such as [EMAIL_1] or [CARD_2] stand for values the person chose to redact. ' +
@@ -28,21 +29,69 @@ const PLACEHOLDER_NOTE =
 
 // `$` may not cross an import, so every config call that touches it lives here.
 
-/** The organisation policy file's path, from the `policyFile` option; empty for none. */
+/** The organisation policy: a file path (`policyFile`) and/or inline JSON (`policyJson`); empty for none. */
 let policyFile = ''
+let policyJson = ''
 let policyCache: { mtimeMs: number; policy: Policy; status: PolicyStatus } | null = null
 let policyWarned = false
+/** Whether the policy option is owned by managed settings; read once per load. */
+let managedCache: boolean | null = null
 
-const noPolicy = (): Policy => ({ watchlist: [], allowlist: [], types: {}, customTypes: [] })
+async function isManaged($: EngineInterface): Promise<boolean> {
+  if (managedCache !== null) return managedCache
+  try {
+    const rows = await $.config.list()
+    managedCache = rows.some(r => (r.key === 'pii-guard.policyFile' || r.key === 'pii-guard.policyJson') && r.isLocked)
+  } catch {
+    managedCache = false
+  }
+  return managedCache
+}
 
-/** Reads the policy file, re-reading when its modification time changes; a broken file warns once and applies nothing. */
+/** Merges two policies; `b` adds to `a`, scalar settings from `b` win. */
+function mergePolicies(a: Policy, b: Policy): Policy {
+  return {
+    watchlist: [...a.watchlist, ...b.watchlist],
+    allowlist: [...a.allowlist, ...b.allowlist],
+    types: { ...a.types, ...b.types },
+    customTypes: [...a.customTypes.filter(t => !b.customTypes.some(x => x.id === t.id)), ...b.customTypes],
+    scanToolReads: b.scanToolReads ?? a.scanToolReads,
+    scrubLog: b.scrubLog ?? a.scrubLog,
+    nameDictionary: b.nameDictionary ?? a.nameDictionary,
+    enabled: b.enabled ?? a.enabled,
+    lists: { ...a.lists, ...b.lists },
+  }
+}
+
+const noPolicy = (): Policy => ({ watchlist: [], allowlist: [], types: {}, customTypes: [], lists: {} })
+
+/**
+ * Reads the policy: inline JSON from the option, then the file (re-read when its
+ * modification time changes). A broken source warns once and applies nothing.
+ */
 async function loadPolicy($: EngineInterface): Promise<{ policy: Policy; status: PolicyStatus } | null> {
-  if (!policyFile) return null
+  if (!policyFile && !policyJson) return null
   const warnOnce = (text: string) => {
     if (policyWarned) return
     policyWarned = true
     try { $.ui.toast(`pii-guard: policy ${text}`) } catch { /* no surface */ }
     $.ui.log(`pii-guard: policy ${text}`, { to: 'debug' })
+  }
+  const managed = await isManaged($)
+  let inline: Policy = noPolicy()
+  const warnings: string[] = []
+  if (policyJson) {
+    try {
+      const parsed = parsePolicy(JSON.parse(policyJson))
+      inline = parsed.policy
+      warnings.push(...parsed.errors)
+    } catch (err) {
+      warnOnce(`JSON option could not be parsed (${(err as Error).message}); it is ignored`)
+    }
+  }
+  if (!policyFile) {
+    if (warnings.length) warnOnce(`JSON has ${warnings.length} entr${warnings.length === 1 ? 'y' : 'ies'} it could not use; see /pii`)
+    return { policy: inline, status: { path: 'inline', loadedAt: Date.now(), error: null, warnings, managed } }
   }
   try {
     const st = await $.fs.stat(policyFile)
@@ -50,15 +99,27 @@ async function loadPolicy($: EngineInterface): Promise<{ policy: Policy; status:
     const raw = await $.fs.read(policyFile)
     if (typeof raw !== 'string') throw new Error('not a text file')
     const parsed = parsePolicy(JSON.parse(raw))
-    const status: PolicyStatus = { path: policyFile, loadedAt: Date.now(), error: null, warnings: parsed.errors }
-    policyCache = { mtimeMs: st.mtimeMs, policy: parsed.policy, status }
-    if (parsed.errors.length) warnOnce(`file has ${parsed.errors.length} entr${parsed.errors.length === 1 ? 'y' : 'ies'} it could not use; see /pii`)
+    const all = [...warnings, ...parsed.errors]
+    const status: PolicyStatus = { path: policyFile, loadedAt: Date.now(), error: null, warnings: all, managed }
+    policyCache = { mtimeMs: st.mtimeMs, policy: mergePolicies(inline, parsed.policy), status }
+    if (all.length) warnOnce(`has ${all.length} entr${all.length === 1 ? 'y' : 'ies'} it could not use; see /pii`)
     return policyCache
   } catch (err) {
     const message = (err as Error).message
-    warnOnce(`file could not be read (${message}); your own settings apply alone`)
-    return { policy: noPolicy(), status: { path: policyFile, loadedAt: null, error: message, warnings: [] } }
+    warnOnce(`file could not be read (${message}); ${policyJson ? 'the inline policy' : 'your own settings'} appl${policyJson ? 'ies' : 'y'} alone`)
+    return { policy: inline, status: { path: policyFile, loadedAt: null, error: message, warnings, managed } }
   }
+}
+
+/** Whether the gate acts right now: enabled (the policy's say wins), and not paused unless the policy enforces it. */
+async function isActive($: EngineInterface, eff: Effective): Promise<boolean> {
+  if (!eff.config.enabled) return false
+  if (eff.locks.enabled) return true
+  return !(await read($, pausedAtom))
+}
+
+function showGateStatus($: EngineInterface, active: boolean, enabled: boolean): void {
+  try { $.ui.status(active ? undefined : enabled ? 'pii-guard paused' : 'pii-guard disabled') } catch { /* no surface */ }
 }
 
 type Effective = { user: Config; config: Config; locks: Locks; policy: PolicyStatus | null }
@@ -279,11 +340,25 @@ function actionsFor($: EngineInterface): PaneActions {
     })(),
     toggleType: (id, on) => void edit((c, locks) => lockReason(locks, { kind: 'type', id }) ?? (() => { const r = setEnabled(c, id, on); return r.ok ? r.config : c })()),
     removeType: id => void edit((c, locks) => lockReason(locks, { kind: 'type', id }) ?? (() => { const r = removeTypeFrom(c, id); return r.ok ? r.config : c })()),
-    addTerm: (list, term) => void edit((c, locks) => (list === 'allowlist' ? lockReason(locks, { kind: 'allowlist-add', term }) : null) ?? addTermTo(c, list, term)),
+    addTerm: (list, term) => void edit((c, locks) => lockReason(locks, { kind: list === 'allowlist' ? 'allowlist-add' : 'watchlist-add', term }) ?? addTermTo(c, list, term)),
     removeTerm: (list, term) => void edit((c, locks) => lockReason(locks, { kind: list, term }) ?? removeTermFrom(c, list, term)),
     setScanReads: on => void edit((c, locks) => lockReason(locks, { kind: 'scanToolReads' }) ?? { ...c, scanToolReads: on }),
-    setScrub: on => void edit(c => ({ ...c, scrubLog: on })),
-    setNameDictionary: on => void edit(c => ({ ...c, nameDictionary: on })),
+    setScrub: on => void edit((c, locks) => lockReason(locks, { kind: 'scrubLog' }) ?? { ...c, scrubLog: on }),
+    setNameDictionary: on => void edit((c, locks) => lockReason(locks, { kind: 'nameDictionary' }) ?? { ...c, nameDictionary: on }),
+    setPaused: on => void (async () => {
+      const eff = await loadEffective($)
+      const held = lockReason(eff.locks, { kind: 'enabled' })
+      if (held) { $.ui.toast(`pii-guard: ${held}`); return }
+      await update($, pausedAtom, () => on)
+      showGateStatus($, !on && eff.config.enabled, eff.config.enabled)
+    })(),
+    setEnabled: on => void (async () => {
+      const eff = await loadEffective($)
+      const held = lockReason(eff.locks, { kind: 'enabled' })
+      if (held) { $.ui.toast(`pii-guard: ${held}`); return }
+      await saveConfig($, { ...eff.user, enabled: on })
+      showGateStatus($, on && !(await read($, pausedAtom)), on)
+    })(),
     revokeSessionAllow: id => void update($, sessionAllowsAtom, l => l.filter(x => x !== id)),
     allowlistValue: (typeId, value) => void allowlistAndTrim($, value, f => f.typeId === typeId && f.value.trim().toLowerCase() === value.trim().toLowerCase()),
     allowlistWord: (typeId, word) => void allowlistAndTrim($, word, f =>
@@ -310,8 +385,10 @@ async function allowlistAndTrim($: EngineInterface, term: string, matches: (f: F
 
 export const register: Register = (on, options) => {
   policyFile = typeof options.policyFile === 'string' ? options.policyFile.trim() : ''
+  policyJson = typeof options.policyJson === 'string' ? options.policyJson.trim() : ''
   policyCache = null
   policyWarned = false
+  managedCache = null
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -320,6 +397,10 @@ export const register: Register = (on, options) => {
       argumentHint: '[list|on|off|add|rm|watch|unwatch|allow|unallow|test|reads]',
     })
     await $.tool.register(TOOL_SPEC)
+    try {
+      const eff = await loadEffective($)
+      showGateStatus($, await isActive($, eff), eff.config.enabled)
+    } catch { /* status is cosmetic */ }
     return next(e)
   })
 
@@ -333,9 +414,16 @@ export const register: Register = (on, options) => {
   })
 
   on('command.run', { command: 'pii' }, async ($, e) => {
-    const { user, config, locks } = await loadEffective($)
+    const eff = await loadEffective($)
+    const { user, config, locks } = eff
     const outcome = runPiiCommand(user, e.args, locks, config)
     if (outcome.config) await saveConfig($, outcome.config)
+    if (outcome.session) await update($, pausedAtom, () => outcome.session === 'pause')
+    if (outcome.session || outcome.config?.enabled !== undefined) {
+      const enabled = outcome.config?.enabled ?? config.enabled
+      const paused = outcome.session ? outcome.session === 'pause' : await read($, pausedAtom)
+      showGateStatus($, enabled && (locks.enabled || !paused), enabled)
+    }
     if (outcome.openSettings) {
       await update($, settingsOpenAtom, () => true)
       await $.ui.open({ id: PANE_ID, title: 'PII settings', focus: true, closeOnEscape: true })
@@ -378,7 +466,9 @@ export const register: Register = (on, options) => {
     if (await isSlashCommand($, e.text)) return next(e)
     agreed = null
     try {
-      const config = await loadConfig($)
+      const eff = await loadEffective($)
+      if (!(await isActive($, eff))) return next(e)
+      const config = eff.config
       const sessionAllows = await read($, sessionAllowsAtom)
       const sections: ReviewSection[] = [sectionOf('prompt', 'Prompt', e.text)]
       const findings: Finding[] = scan(e.text, 'prompt', config, { sessionAllows })
@@ -443,7 +533,9 @@ export const register: Register = (on, options) => {
     const ran = await next(e)
     if (ran.deny !== undefined || ran.isError || e.agentId) return ran
     try {
-      const config = await loadConfig($)
+      const eff = await loadEffective($)
+      if (!(await isActive($, eff))) return ran
+      const config = eff.config
       if (!config.scanToolReads) return ran
       const record = ran.result as { type?: string; file?: { content?: string } } | undefined
       const content = record?.type === 'text' && typeof record.file?.content === 'string' ? record.file.content : undefined
@@ -491,7 +583,9 @@ export const register: Register = (on, options) => {
   // decisions are the ones the last sent prompt agreed, redact for anything else.
   on('prompt.attachment', { type: 'file' }, async ($, e, next) => {
     if (e.agentId) return next(e)
-    const config = await loadConfig($)
+    const eff = await loadEffective($)
+    if (!(await isActive($, eff))) return next(e)
+    const config = eff.config
     const sessionAllows = await read($, sessionAllowsAtom)
     const findings = scan(e.text, 'attachment', config, { sessionAllows })
     if (findings.length === 0) return next(e)
@@ -503,14 +597,14 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) => {
     const E = paneElements($.ui.resolve(e))
-    const [review, queue, allows, settingsOpen, effective] = await Promise.all([
-      read($, reviewAtom), read($, queueAtom), read($, sessionAllowsAtom), read($, settingsOpenAtom), loadEffective($),
+    const [review, queue, allows, settingsOpen, effective, paused] = await Promise.all([
+      read($, reviewAtom), read($, queueAtom), read($, sessionAllowsAtom), read($, settingsOpenAtom), loadEffective($), read($, pausedAtom),
     ])
     // Subscribes this drawing to config saves, which bump configVersion.
     await $.state.get(configVersion)
     const actions = actionsFor($)
     if (settingsOpen || !review) {
-      return renderSettings(E, effective.config, allows, review !== null, actions, effective.locks, effective.policy)
+      return renderSettings(E, effective.config, allows, review !== null, actions, effective.locks, effective.policy, paused)
     }
     return renderReview(E, review, effective.config, actions, queue.length, e.props.bodyColumns)
   })

@@ -437,3 +437,55 @@ test('a medium-confidence value is marked likely in its card', async ($, on) => 
   expect(await ui.find({ key: 'card:name' })).toBeTruthy()
   expect(await ui.find({ text: 'likely' })).toBeTruthy()
 })
+
+const piiCmd = ($: Engine, args: string) => $.command.run({ command: 'pii', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } })
+
+test('pausing for the session lets prompts through untouched; resume re-arms', async ($, on) => {
+  mock.store(on); const { opens } = stub(on)
+  on('ui.status', () => ({ value: undefined }))
+  expect((await piiCmd($, 'pause')).text).toMatch(/paused/i)
+  expect(await $.prompt.submit(submit('mail a@b.co'))).toEqual({ text: 'mail a@b.co' })
+  expect(opens()).toBe(0)
+  await piiCmd($, 'resume')
+  expect(await $.prompt.submit(submit('mail a@b.co'))).toEqual(HELD)
+})
+
+test('disabled for all sessions passes prompts and Reads through', async ($, on) => {
+  mock.store(on, { config: { version: 1, types: [], watchlist: [], allowlist: [], scanToolReads: true, enabled: false } }); stub(on)
+  on('ui.status', () => ({ value: undefined }))
+  on('tool.call', { tool: 'Read' }, () => readRecord('a@b.co') as never)
+  expect(await $.prompt.submit(submit('mail a@b.co'))).toEqual({ text: 'mail a@b.co' })
+  const r = await $.tool.call({ tool: 'Read', file_path: 'C:/x/a.txt' })
+  expect('text' in r && r.text).toBe('a@b.co')
+})
+
+test('an organisation policy that sets enabled wins over a user disable and hides the switch', { options: { policyFile: POLICY_PATH } }, async ($, on) => {
+  mock.store(on, { config: { version: 1, types: [], watchlist: [], allowlist: [], scanToolReads: false, enabled: false } })
+  stub(on, { fs: policyFs(() => JSON.stringify({ enabled: true })) })
+  on('ui.status', () => ({ value: undefined }))
+  on('config.list', () => ({ value: [{ key: 'pii-guard.policyFile', label: 'Policy file', kind: 'string', value: POLICY_PATH, provider: { kind: 'engine' }, isLocked: true }] as never }))
+  expect((await piiCmd($, 'pause')).text).toMatch(/policy/)
+  expect(await $.prompt.submit(submit('mail a@b.co'))).toEqual(HELD)
+  const ui = await mount($)
+  await ui.press({ key: 'settings' })
+  expect(await ui.find({ text: /managed by your organisation/i })).toBeTruthy()
+  expect(await ui.find({ key: 'session:pause' })).toBeFalsy()
+  expect(await ui.find({ key: 'plugin:disable' })).toBeFalsy()
+})
+
+test('without a managed policy the settings view offers pause and disable', async ($, on) => {
+  mock.store(on); stub(on)
+  on('ui.status', () => ({ value: undefined }))
+  const ui = await mount($)
+  expect(await ui.find({ key: 'session:pause' })).toBeTruthy()
+  expect(await ui.find({ key: 'plugin:disable' })).toBeTruthy()
+  await ui.press({ key: 'plugin:disable' })
+  expect(await ui.find({ key: 'plugin:enable' })).toBeTruthy()
+})
+
+test('an inline policyJson option works like a policy file', { options: { policyJson: JSON.stringify({ watchlist: ['Nightjar'] }) } }, async ($, on) => {
+  mock.store(on); stub(on)
+  on('ui.status', () => ({ value: undefined }))
+  on('config.list', () => ({ value: [] }))
+  expect(await $.prompt.submit(submit('nightjar status'))).toEqual(HELD)
+})

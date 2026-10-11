@@ -3,6 +3,7 @@ import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import * as commandModule from './command'
 import * as configModule from './config'
+import { emptyLocks } from './policy'
 
 function stub(on: On) {
   on('ui.open', () => ({ value: { isPlaced: true as const } }))
@@ -67,7 +68,7 @@ test('bare /pii opens settings; unknown subcommand prints usage', async ($, on) 
 
 test('policy-locked settings are refused by /pii and marked in list', async ($, on) => {
   mock.store(on, { config: { version: 1, types: [], watchlist: ['Joanna'], allowlist: [], scanToolReads: false } }); stub(on)
-  const locks = { watchlist: ['acme ltd'], allowlist: ['acme code'], types: ['email'], scanToolReads: true }
+  const locks = { ...emptyLocks(), watchlist: ['acme ltd'], allowlist: ['acme code'], types: ['email'], scanToolReads: true }
   const { runPiiCommand } = commandModule
   const user = configModule.defaultConfig()
   user.watchlist = ['Joanna', 'Acme Ltd']
@@ -85,8 +86,28 @@ test('policy-locked settings are refused by /pii and marked in list', async ($, 
 test('/pii allow refuses a policy watchlist term', async ($, on) => {
   mock.store(on); stub(on)
   const user = configModule.defaultConfig()
-  const locks = { watchlist: ['acme ltd'], allowlist: [], types: [], scanToolReads: false }
+  const locks = { ...emptyLocks(), watchlist: ['acme ltd'] }
   const r = commandModule.runPiiCommand(user, 'allow Acme Ltd', locks)
   expect(r.text).toMatch(/watchlist/)
   expect(r.config).toBeUndefined()
+})
+
+test('/pii pause and resume are session switches; disable and enable persist', async ($, on) => {
+  mock.store(on); stub(on)
+  const user = configModule.defaultConfig()
+  expect(commandModule.runPiiCommand(user, 'pause').session).toBe('pause')
+  expect(commandModule.runPiiCommand(user, 'resume').session).toBe('resume')
+  expect(commandModule.runPiiCommand(user, 'disable').config?.enabled).toBe(false)
+  expect(commandModule.runPiiCommand({ ...user, enabled: false }, 'enable').config?.enabled).toBe(true)
+  const locks = { watchlist: [], allowlist: [], types: [], scanToolReads: false, enabled: true, scrubLog: false, nameDictionary: false, watchlistFrozen: false, allowlistFrozen: false }
+  expect(commandModule.runPiiCommand(user, 'disable', locks).text).toMatch(/policy/)
+  expect(commandModule.runPiiCommand(user, 'pause', locks).text).toMatch(/policy/)
+})
+
+test('frozen lists refuse watch and allow additions', async ($, on) => {
+  mock.store(on); stub(on)
+  const user = configModule.defaultConfig()
+  const locks = { watchlist: [], allowlist: [], types: [], scanToolReads: false, enabled: false, scrubLog: false, nameDictionary: false, watchlistFrozen: true, allowlistFrozen: true }
+  expect(commandModule.runPiiCommand(user, 'watch Someone', locks).text).toMatch(/policy/)
+  expect(commandModule.runPiiCommand(user, 'allow thing', locks).text).toMatch(/policy/)
 })

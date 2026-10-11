@@ -16,6 +16,8 @@ export const USAGE = [
   '  /pii reads on|off         scan Read tool results',
   '  /pii scrub on|off         star out redacted values in the local session log',
   '  /pii names on|off         dictionary matching of any-case first name + surname',
+  '  /pii pause | resume       switch the gate off or on for this session',
+  '  /pii disable | enable     switch the gate off or on for all sessions',
 ].join('\n')
 
 export type CommandOutcome = {
@@ -23,6 +25,8 @@ export type CommandOutcome = {
   /** The config to persist, when the command changed it. */
   config?: Config
   openSettings?: true
+  /** A session-only switch of the gate. */
+  session?: 'pause' | 'resume'
 }
 
 /**
@@ -76,7 +80,10 @@ export function runPiiCommand(config: Config, args: string, locks: Locks = empty
       const r = removeType(config, id)
       return r.ok ? changed(r.config, `removed ${id}`) : { text: r.reason }
     }
-    case 'watch': return changed(addTerm(config, 'watchlist', restText), `watching "${restText}"`)
+    case 'watch': {
+      const l = locked(lockReason(locks, { kind: 'watchlist-add', term: restText }))
+      return l ?? changed(addTerm(config, 'watchlist', restText), `watching "${restText}"`)
+    }
     case 'unwatch': {
       const l = locked(lockReason(locks, { kind: 'watchlist', term: restText }))
       return l ?? changed(removeTerm(config, 'watchlist', restText), `no longer watching "${restText}"`)
@@ -89,12 +96,24 @@ export function runPiiCommand(config: Config, args: string, locks: Locks = empty
       const l = locked(lockReason(locks, { kind: 'allowlist', term: restText }))
       return l ?? changed(removeTerm(config, 'allowlist', restText), `"${restText.toLowerCase()}" removed from allowlist`)
     }
+    case 'pause': case 'resume': {
+      const l = locked(lockReason(locks, { kind: 'enabled' }))
+      return l ?? { session: sub, text: sub === 'pause' ? 'pii-guard paused for this session; /pii resume to switch it back on' : 'pii-guard resumed' }
+    }
+    case 'disable': case 'enable': {
+      const l = locked(lockReason(locks, { kind: 'enabled' }))
+      return l ?? changed({ ...config, enabled: sub === 'enable' }, sub === 'enable' ? 'pii-guard enabled for all sessions' : 'pii-guard disabled for all sessions; /pii enable to switch it back on')
+    }
     case 'names': {
+      const l = locked(lockReason(locks, { kind: 'nameDictionary' }))
+      if (l) return l
       if (rest[0] !== 'on' && rest[0] !== 'off') return { text: USAGE }
       return changed({ ...config, nameDictionary: rest[0] === 'on' }, `name dictionary: ${rest[0]}`)
     }
     case 'scrub': {
       if (rest[0] !== 'on' && rest[0] !== 'off') return { text: USAGE }
+      const l = locked(lockReason(locks, { kind: 'scrubLog' }))
+      if (l) return l
       return changed({ ...config, scrubLog: rest[0] === 'on' }, `local log scrub: ${rest[0]}`)
     }
     case 'reads': {

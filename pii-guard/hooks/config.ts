@@ -13,6 +13,7 @@ export function defaultConfig(): Config {
     scanToolReads: false,
     scrubLog: true,
     nameDictionary: true,
+    enabled: true,
   }
 }
 
@@ -61,6 +62,7 @@ export function mergeBuiltins(stored: unknown): Config {
     scanToolReads: stored.scanToolReads === true,
     scrubLog: stored.scrubLog !== false,
     nameDictionary: stored.nameDictionary !== false,
+    enabled: stored.enabled !== false,
   }
 }
 

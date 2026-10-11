@@ -16,6 +16,7 @@ const config = (over: Partial<Config> = {}): Config => ({
   scanToolReads: false,
   scrubLog: true,
   nameDictionary: true,
+  enabled: true,
   ...over,
 })
 

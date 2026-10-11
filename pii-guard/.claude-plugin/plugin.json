@@ -1,6 +1,6 @@
 {
   "name": "pii-guard",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Holds prompts, @file contents and Read results that contain PII or secrets behind a review pane with per-type allow/redact decisions.",
   "author": {
     "name": "dave-net-positive",
@@ -13,6 +13,12 @@
       "type": "string",
       "title": "Policy file",
       "description": "Path to an organisation policy JSON (watchlist, allowlist, type states, custom types, scanToolReads) that is overlaid on this user's settings and locked. Leave empty for none.",
+      "required": false
+    },
+    "policyJson": {
+      "type": "string",
+      "title": "Policy (inline JSON)",
+      "description": "An organisation policy as a JSON string, for managed settings without a file to distribute. Same keys as the policy file; merged with policyFile when both are set.",
       "required": false
     }
   }
