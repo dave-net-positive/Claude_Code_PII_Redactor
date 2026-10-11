@@ -81,3 +81,12 @@ test('policy-locked settings are refused by /pii and marked in list', async ($, 
   expect(listed).toMatch(/email\s+on\s+policy/)
   expect(listed).toMatch(/card\s+on\s{2}/)
 })
+
+test('/pii allow refuses a policy watchlist term', async ($, on) => {
+  mock.store(on); stub(on)
+  const user = configModule.defaultConfig()
+  const locks = { watchlist: ['acme ltd'], allowlist: [], types: [], scanToolReads: false }
+  const r = commandModule.runPiiCommand(user, 'allow Acme Ltd', locks)
+  expect(r.text).toMatch(/watchlist/)
+  expect(r.config).toBeUndefined()
+})

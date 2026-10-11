@@ -64,3 +64,13 @@ test('lockReason names what a policy holds and allows the rest', async () => {
   expect(lockReason(locks, { kind: 'scanToolReads' })).toMatch(/policy/)
   expect(lockReason(emptyLocks(), { kind: 'scanToolReads' })).toBe(null)
 })
+
+test('a policy watchlist term cannot be neutralised by the user allowlist', async () => {
+  const user = { ...defaultConfig(), allowlist: ['acme ltd', 'foo'] }
+  const { policy: p } = parsePolicy({ watchlist: ['Acme Ltd'] })
+  const { config, locks } = applyPolicy(user, p)
+  expect(config.allowlist).not.toContain('acme ltd')
+  expect(config.allowlist).toContain('foo')
+  expect(lockReason(locks, { kind: 'allowlist-add', term: 'ACME Ltd' })).toMatch(/watchlist/)
+  expect(lockReason(locks, { kind: 'allowlist-add', term: 'foo' })).toBe(null)
+})

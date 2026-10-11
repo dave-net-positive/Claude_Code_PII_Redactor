@@ -79,7 +79,10 @@ export function runPiiCommand(config: Config, args: string, locks: Locks = empty
       const l = locked(lockReason(locks, { kind: 'watchlist', term: restText }))
       return l ?? changed(removeTerm(config, 'watchlist', restText), `no longer watching "${restText}"`)
     }
-    case 'allow': return changed(addTerm(config, 'allowlist', restText), `"${restText.toLowerCase()}" will not be reported`)
+    case 'allow': {
+      const l = locked(lockReason(locks, { kind: 'allowlist-add', term: restText }))
+      return l ?? changed(addTerm(config, 'allowlist', restText), `"${restText.toLowerCase()}" will not be reported`)
+    }
     case 'unallow': {
       const l = locked(lockReason(locks, { kind: 'allowlist', term: restText }))
       return l ?? changed(removeTerm(config, 'allowlist', restText), `"${restText.toLowerCase()}" removed from allowlist`)

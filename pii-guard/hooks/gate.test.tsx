@@ -349,3 +349,14 @@ test('the review draws a bordered card per type in the category colour', async (
   expect(card?.props.borderStyle).toBeTruthy()
   expect(card?.props.borderColor).toBe('suggestion')
 })
+
+test('the review Allowlist button refuses a policy watchlist name and keeps the review', { options: { policyFile: POLICY_PATH } }, async ($, on) => {
+  mock.store(on)
+  const { submitted, log } = stub(on, { fs: policyFs(() => JSON.stringify({ watchlist: ['Nightjar'] })) })
+  expect(await $.prompt.submit(submit('nightjar status'))).toEqual(HELD)
+  const ui = await mount($)
+  await ui.press({ key: 'allow:name:0' })
+  expect(submitted).toEqual([])
+  expect(await ui.find({ key: 'decide:name:redact' })).toBeTruthy()
+  expect(log.some(l => /toast:.*watchlist/.test(l))).toBe(true)
+})

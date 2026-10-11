@@ -225,7 +225,7 @@ function actionsFor($: EngineInterface): PaneActions {
     })(),
     toggleType: (id, on) => void edit((c, locks) => lockReason(locks, { kind: 'type', id }) ?? (() => { const r = setEnabled(c, id, on); return r.ok ? r.config : c })()),
     removeType: id => void edit((c, locks) => lockReason(locks, { kind: 'type', id }) ?? (() => { const r = removeTypeFrom(c, id); return r.ok ? r.config : c })()),
-    addTerm: (list, term) => void edit(c => addTermTo(c, list, term)),
+    addTerm: (list, term) => void edit((c, locks) => (list === 'allowlist' ? lockReason(locks, { kind: 'allowlist-add', term }) : null) ?? addTermTo(c, list, term)),
     removeTerm: (list, term) => void edit((c, locks) => lockReason(locks, { kind: list, term }) ?? removeTermFrom(c, list, term)),
     setScanReads: on => void edit((c, locks) => lockReason(locks, { kind: 'scanToolReads' }) ?? { ...c, scanToolReads: on }),
     revokeSessionAllow: id => void update($, sessionAllowsAtom, l => l.filter(x => x !== id)),
@@ -235,9 +235,11 @@ function actionsFor($: EngineInterface): PaneActions {
   }
 }
 
-/** Adds `term` to the person's allowlist, drops matching findings from the review shown, and sends if nothing is left. */
+/** Adds `term` to the person's allowlist (unless the policy forbids it), drops matching findings from the review shown, and sends if nothing is left. */
 async function allowlistAndTrim($: EngineInterface, term: string, matches: (f: Finding) => boolean): Promise<void> {
-  const { user } = await loadEffective($)
+  const { user, locks } = await loadEffective($)
+  const refused = lockReason(locks, { kind: 'allowlist-add', term })
+  if (refused) { $.ui.toast(`pii-guard: not changed, ${refused}`); return }
   await saveConfig($, addTermTo(user, 'allowlist', term))
   const review = await read($, reviewAtom)
   if (!review || review.kind !== 'prompt') return

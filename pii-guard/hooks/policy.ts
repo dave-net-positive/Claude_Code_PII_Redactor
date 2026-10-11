@@ -67,7 +67,9 @@ export function applyPolicy(user: Config, policy: Policy): { config: Config; loc
   }
   const have = (list: string[], term: string) => list.some(x => lower(x) === lower(term))
   const watchlist = [...user.watchlist, ...policy.watchlist.filter(t => !have(user.watchlist, t))]
-  const allowlist = [...user.allowlist, ...policy.allowlist.filter(t => !have(user.allowlist, t))]
+  // A policy watchlist term must be reported, so a matching user allowlist entry is ignored.
+  const userAllow = user.allowlist.filter(t => !have(policy.watchlist, t))
+  const allowlist = [...userAllow, ...policy.allowlist.filter(t => !have(userAllow, t))]
   const types = user.types
     .filter(t => !policy.customTypes.some(p => p.id === t.id))
     .map(t => (t.id in policy.types ? { ...t, enabled: policy.types[t.id]!.enabled } : t))
@@ -85,6 +87,8 @@ export type LockedChange =
   | { kind: 'type'; id: string }
   | { kind: 'watchlist'; term: string }
   | { kind: 'allowlist'; term: string }
+  /** Adding a term to the allowlist: refused when it would silence a policy watchlist name. */
+  | { kind: 'allowlist-add'; term: string }
   | { kind: 'scanToolReads' }
 
 /** Why a change is refused under `locks`, or null when the person may make it. */
@@ -100,6 +104,8 @@ export function lockReason(locks: Locks, change: LockedChange): string | null {
       return locks.watchlist.includes(lower(change.term)) ? `"${change.term}" is on the policy watchlist` : null
     case 'allowlist':
       return locks.allowlist.includes(lower(change.term)) ? `"${change.term}" is on the policy allowlist` : null
+    case 'allowlist-add':
+      return locks.watchlist.includes(lower(change.term)) ? `"${change.term}" is on the policy watchlist and cannot be allowlisted` : null
     case 'scanToolReads':
       return locks.scanToolReads ? 'Read scanning is set by your organisation\'s policy' : null
   }
