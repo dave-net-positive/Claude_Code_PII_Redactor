@@ -24,6 +24,8 @@ export type Config = {
   scanToolReads: boolean
   /** Patch the typed text out of the local session log after a redaction (default true). */
   scrubLog: boolean
+  /** Catch any-case names from the first-name and surname dictionaries (default true). */
+  nameDictionary: boolean
 }
 
 /** An organisation's policy file, parsed. Every list may be empty. */
@@ -59,6 +61,8 @@ export type Finding = {
   start: number
   end: number
   section: string
+  /** Absent means high: a checksum, a pattern or a dictionary phrase. Medium is a shape or a guess. */
+  confidence?: 'high' | 'medium'
 }
 
 export type Decision = 'allow-once' | 'allow-session' | 'redact'

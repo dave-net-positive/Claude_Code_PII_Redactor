@@ -1,5 +1,6 @@
 import type { Config, Decision, Finding, PiiType } from '../types'
 import { VALIDATORS } from './patterns'
+import { dictionaryNames, dictionaryHealth, toFindings } from './dictionary'
 
 export const MAX_SCAN = 200_000
 const MAX_PATTERN = 500
@@ -161,6 +162,12 @@ export function scan(text: string, section: string, config: Config, opts: ScanOp
     for (const src of type.patterns) {
       const re = compiled(src, type.caseSensitive === true)
       if (re) collect(re, body, type, section, hits)
+    }
+    if (type.id === 'name' && config.nameDictionary) {
+      hits.push(...toFindings(dictionaryNames(body, NAME_STOPWORDS), type.id, section))
+    }
+    if (type.id === 'health') {
+      hits.push(...toFindings(dictionaryHealth(body), type.id, section))
     }
     const heuristicCount = hits.length
     if (type.id === 'name') {

@@ -27,7 +27,7 @@ With "Scan Read tool results" on, a `Read` whose content contains PII is decided
 
 ## Built-in types
 
-email, phone, UK postcode, NI number, NHS number (mod-11 checked), passport, UK driving licence, payment card (Luhn checked), IBAN (mod-97 checked), UK sort code + account, US SSN, IP address, date of birth, API keys and secrets, health terms, personal names (watchlist plus a capitalised-pair heuristic filtered by an allowlist). All start enabled.
+email, phone, UK postcode, NI number, NHS number (mod-11 checked), passport, UK driving licence, payment card (Luhn checked), IBAN (mod-97 checked), UK sort code + account, US SSN, IP address, date of birth, API keys and secrets, health terms (condition and drug dictionaries, ICD codes, medical word shapes), personal names (watchlist, capitalised pairs, cue phrases, and a first-name + surname dictionary for any-case names). All start enabled. Dictionary sources are public domain; see the repo README.
 
 ## Configuration
 

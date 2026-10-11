@@ -10,6 +10,7 @@ const config = (over: Partial<Config> = {}): Config => ({
   allowlist: [...DEFAULT_ALLOWLIST],
   scanToolReads: false,
   scrubLog: true,
+  nameDictionary: true,
   ...over,
 })
 

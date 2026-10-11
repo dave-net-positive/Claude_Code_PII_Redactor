@@ -16,6 +16,7 @@ export type PaneActions = {
   removeTerm(list: 'watchlist' | 'allowlist', term: string): void
   setScanReads(on: boolean): void
   setScrub(on: boolean): void
+  setNameDictionary(on: boolean): void
   revokeSessionAllow(id: string): void
   /** Add this exact value to the allowlist and drop it from the review shown. */
   allowlistValue(typeId: string, value: string): void
@@ -176,9 +177,11 @@ export function renderReview(E: PaneElements, review: Review, config: Config, ac
         </Box>
         {shown.map((value, i) => {
           const words = id === 'name' ? value.split(/[\s-]+/).filter(w => w.length > 1) : []
+          const likely = review.findings.some(f => f.typeId === id && f.value.trim().toLowerCase() === value.toLowerCase() && f.confidence === 'medium')
           return (
             <Box key={`value:${id}:${i}`} gap={1} flexWrap="wrap">
               <Text color={color}>{value}</Text>
+              {likely ? <Text dimColor>likely</Text> : null}
               <Button key={`allow:${id}:${i}`} label="Allowlist" plain onPress={() => actions.allowlistValue(id, value)} />
               {words.length > 1
                 ? words.map(w => (
@@ -326,6 +329,16 @@ export function renderSettings(
               plain
               onPress={() => actions.setScanReads(!config.scanToolReads)}
             />}
+      </Box>
+      <Box gap={1} marginTop={1}>
+        <Text bold>Dictionary names (any-case first name + surname):</Text>
+        <Text>{config.nameDictionary ? 'on' : 'off'}</Text>
+        <Button
+          key={config.nameDictionary ? 'names:off' : 'names:on'}
+          label={config.nameDictionary ? 'Turn off' : 'Turn on'}
+          plain
+          onPress={() => actions.setNameDictionary(!config.nameDictionary)}
+        />
       </Box>
       <Box gap={1} marginTop={1}>
         <Text bold>Scrub the local session log after a redaction:</Text>

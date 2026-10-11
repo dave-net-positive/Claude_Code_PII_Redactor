@@ -12,6 +12,7 @@ export function defaultConfig(): Config {
     allowlist: [...DEFAULT_ALLOWLIST],
     scanToolReads: false,
     scrubLog: true,
+    nameDictionary: true,
   }
 }
 
@@ -59,6 +60,7 @@ export function mergeBuiltins(stored: unknown): Config {
     allowlist: 'allowlist' in stored ? strings(stored.allowlist) : base.allowlist,
     scanToolReads: stored.scanToolReads === true,
     scrubLog: stored.scrubLog !== false,
+    nameDictionary: stored.nameDictionary !== false,
   }
 }
 

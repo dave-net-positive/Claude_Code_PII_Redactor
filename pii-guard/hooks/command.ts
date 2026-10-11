@@ -15,6 +15,7 @@ export const USAGE = [
   '  /pii test <id|regex> <sample text>',
   '  /pii reads on|off         scan Read tool results',
   '  /pii scrub on|off         star out redacted values in the local session log',
+  '  /pii names on|off         dictionary matching of any-case first name + surname',
 ].join('\n')
 
 export type CommandOutcome = {
@@ -87,6 +88,10 @@ export function runPiiCommand(config: Config, args: string, locks: Locks = empty
     case 'unallow': {
       const l = locked(lockReason(locks, { kind: 'allowlist', term: restText }))
       return l ?? changed(removeTerm(config, 'allowlist', restText), `"${restText.toLowerCase()}" removed from allowlist`)
+    }
+    case 'names': {
+      if (rest[0] !== 'on' && rest[0] !== 'off') return { text: USAGE }
+      return changed({ ...config, nameDictionary: rest[0] === 'on' }, `name dictionary: ${rest[0]}`)
     }
     case 'scrub': {
       if (rest[0] !== 'on' && rest[0] !== 'off') return { text: USAGE }

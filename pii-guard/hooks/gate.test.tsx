@@ -429,3 +429,11 @@ test('cancelling a review scrubs every flagged value from the local log', async 
   expect(argv[0]).toBe('powershell')
   expect(log.some(l => /toast:.*scrubbed 1/.test(l))).toBe(true)
 })
+
+test('a medium-confidence value is marked likely in its card', async ($, on) => {
+  mock.store(on); stub(on)
+  expect(await $.prompt.submit(submit('ask steven zorblatt to call'))).toEqual(HELD)
+  const ui = await mount($)
+  expect(await ui.find({ key: 'card:name' })).toBeTruthy()
+  expect(await ui.find({ text: 'likely' })).toBeTruthy()
+})

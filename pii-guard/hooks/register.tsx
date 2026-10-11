@@ -283,6 +283,7 @@ function actionsFor($: EngineInterface): PaneActions {
     removeTerm: (list, term) => void edit((c, locks) => lockReason(locks, { kind: list, term }) ?? removeTermFrom(c, list, term)),
     setScanReads: on => void edit((c, locks) => lockReason(locks, { kind: 'scanToolReads' }) ?? { ...c, scanToolReads: on }),
     setScrub: on => void edit(c => ({ ...c, scrubLog: on })),
+    setNameDictionary: on => void edit(c => ({ ...c, nameDictionary: on })),
     revokeSessionAllow: id => void update($, sessionAllowsAtom, l => l.filter(x => x !== id)),
     allowlistValue: (typeId, value) => void allowlistAndTrim($, value, f => f.typeId === typeId && f.value.trim().toLowerCase() === value.trim().toLowerCase()),
     allowlistWord: (typeId, word) => void allowlistAndTrim($, word, f =>

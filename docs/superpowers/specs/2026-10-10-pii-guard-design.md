@@ -490,6 +490,27 @@ run and the log is under 4 MiB, `$.fs` rewrites it instead. Conversation
 messages are never touched. Failure warns once per session. `scrubLog`
 (default true) in the config; `/pii scrub on|off`; a settings toggle.
 
+### Dictionary tier (v1.3)
+
+Pure code, no model. `tools/build-dictionaries.py` generates
+`pii-guard/hooks/data/*.ts` from public-domain sources (SSA first names via
+the hadley mirror, US Census surnames, google-10000-english, CMS ICD-10-CM
+category titles, FDA Drugs@FDA). `hooks/dictionary.ts` adds to the `name`
+type any-case `first surname` pairs (listed surname: high confidence; a word
+that is neither common English nor a stopword: medium) and to the `health`
+type listed conditions and drugs (high) plus medical suffixes with an
+exclusion set (medium). `Finding.confidence` is optional; the pane marks
+medium values "likely". `nameDictionary` (default true) toggles the name
+tier; `/pii names on|off`. Patterns may start with `(?i)` to run
+case-insensitively inside a case-sensitive type; the `name` type uses this
+for cue phrases ("my name is garry bellows").
+
+### Local-model tier (v1.4, planned)
+
+An opt-in HTTP call to a local NER endpoint (localhost or private address
+only, policy-lockable) whose entities merge as findings. For home use; work
+use needs organisational sign-off.
+
 ### Direction for the pane
 
 If mods become available in desktop chat or Cowork, a `Client` surface module
