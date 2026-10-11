@@ -1,12 +1,13 @@
 import { atom, read, update } from 'claude-code'
 import type { Register, EngineInterface } from 'claude-code'
-import type { Config, Decision, Finding, Review, ReviewSection, Unscannable } from '../types'
+import type { Config, Decision, Finding, Locks, Policy, PolicyStatus, Review, ReviewSection, Unscannable } from '../types'
 import {
   STORE_KEY, mergeBuiltins, setEnabled,
   removeType as removeTypeFrom, addTerm as addTermTo, removeTerm as removeTermFrom,
 } from './config'
 import { scan, redact, placeholderFor, MAX_SCAN } from './detect'
 import type { Numbering } from './detect'
+import { parsePolicy, applyPolicy, emptyLocks, lockReason } from './policy'
 import { runPiiCommand } from './command'
 import { TOOL_SPEC, runPatternsTool } from './tool'
 import { paneElements, renderReview, renderSettings } from './review'
@@ -24,9 +25,54 @@ const PLACEHOLDER_NOTE =
   'pii-guard: bracketed placeholders such as [EMAIL_1] or [CARD_2] stand for values the person chose to redact. ' +
   'The same placeholder always means the same value. Do not try to reconstruct them, and never write a placeholder into a file or code in place of the real value: tell the person instead.'
 
-// `$` may not cross an import, so the two config calls that touch it live here.
+// `$` may not cross an import, so every config call that touches it lives here.
+
+/** The organisation policy file's path, from the `policyFile` option; empty for none. */
+let policyFile = ''
+let policyCache: { mtimeMs: number; policy: Policy; status: PolicyStatus } | null = null
+let policyWarned = false
+
+const noPolicy = (): Policy => ({ watchlist: [], allowlist: [], types: {}, customTypes: [] })
+
+/** Reads the policy file, re-reading when its modification time changes; a broken file warns once and applies nothing. */
+async function loadPolicy($: EngineInterface): Promise<{ policy: Policy; status: PolicyStatus } | null> {
+  if (!policyFile) return null
+  const warnOnce = (text: string) => {
+    if (policyWarned) return
+    policyWarned = true
+    try { $.ui.toast(`pii-guard: policy ${text}`) } catch { /* no surface */ }
+    $.ui.log(`pii-guard: policy ${text}`, { to: 'debug' })
+  }
+  try {
+    const st = await $.fs.stat(policyFile)
+    if (policyCache && policyCache.mtimeMs === st.mtimeMs) return policyCache
+    const raw = await $.fs.read(policyFile)
+    if (typeof raw !== 'string') throw new Error('not a text file')
+    const parsed = parsePolicy(JSON.parse(raw))
+    const status: PolicyStatus = { path: policyFile, loadedAt: Date.now(), error: null, warnings: parsed.errors }
+    policyCache = { mtimeMs: st.mtimeMs, policy: parsed.policy, status }
+    if (parsed.errors.length) warnOnce(`file has ${parsed.errors.length} entr${parsed.errors.length === 1 ? 'y' : 'ies'} it could not use; see /pii`)
+    return policyCache
+  } catch (err) {
+    const message = (err as Error).message
+    warnOnce(`file could not be read (${message}); your own settings apply alone`)
+    return { policy: noPolicy(), status: { path: policyFile, loadedAt: null, error: message, warnings: [] } }
+  }
+}
+
+type Effective = { user: Config; config: Config; locks: Locks; policy: PolicyStatus | null }
+
+/** The person's stored config, and the config scanning uses once the policy is overlaid. */
+async function loadEffective($: EngineInterface): Promise<Effective> {
+  const user = mergeBuiltins(await $.store.get(STORE_KEY))
+  const loaded = await loadPolicy($)
+  if (!loaded) return { user, config: user, locks: emptyLocks(), policy: null }
+  const { config, locks } = applyPolicy(user, loaded.policy)
+  return { user, config, locks, policy: loaded.status }
+}
+
 async function loadConfig($: EngineInterface): Promise<Config> {
-  return mergeBuiltins(await $.store.get(STORE_KEY))
+  return (await loadEffective($)).config
 }
 
 async function saveConfig($: EngineInterface, config: Config): Promise<void> {
@@ -157,7 +203,13 @@ async function cancelReview($: EngineInterface): Promise<void> {
 }
 
 function actionsFor($: EngineInterface): PaneActions {
-  const edit = async (fn: (c: Config) => Config) => saveConfig($, fn(await loadConfig($)))
+  // Edits apply to the person's own config and are refused where the policy holds the setting.
+  const edit = async (fn: (user: Config, locks: Locks) => Config | string) => {
+    const { user, locks } = await loadEffective($)
+    const out = fn(user, locks)
+    if (typeof out === 'string') { $.ui.toast(`pii-guard: not changed, ${out}`); return }
+    await saveConfig($, out)
+  }
   const withReview = (fn: (r: Review) => Promise<void>) => void (async () => {
     const r = await read($, reviewAtom)
     if (r) await fn(r)
@@ -171,16 +223,20 @@ function actionsFor($: EngineInterface): PaneActions {
       await update($, settingsOpenAtom, () => false)
       if (!(await read($, reviewAtom))) await $.ui.close({ id: PANE_ID })
     })(),
-    toggleType: (id, on) => void edit(c => { const r = setEnabled(c, id, on); return r.ok ? r.config : c }),
-    removeType: id => void edit(c => { const r = removeTypeFrom(c, id); return r.ok ? r.config : c }),
+    toggleType: (id, on) => void edit((c, locks) => lockReason(locks, { kind: 'type', id }) ?? (() => { const r = setEnabled(c, id, on); return r.ok ? r.config : c })()),
+    removeType: id => void edit((c, locks) => lockReason(locks, { kind: 'type', id }) ?? (() => { const r = removeTypeFrom(c, id); return r.ok ? r.config : c })()),
     addTerm: (list, term) => void edit(c => addTermTo(c, list, term)),
-    removeTerm: (list, term) => void edit(c => removeTermFrom(c, list, term)),
-    setScanReads: on => void edit(c => ({ ...c, scanToolReads: on })),
+    removeTerm: (list, term) => void edit((c, locks) => lockReason(locks, { kind: list, term }) ?? removeTermFrom(c, list, term)),
+    setScanReads: on => void edit((c, locks) => lockReason(locks, { kind: 'scanToolReads' }) ?? { ...c, scanToolReads: on }),
     revokeSessionAllow: id => void update($, sessionAllowsAtom, l => l.filter(x => x !== id)),
   }
 }
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  policyFile = typeof options.policyFile === 'string' ? options.policyFile.trim() : ''
+  policyCache = null
+  policyWarned = false
+
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'pii',
@@ -194,13 +250,15 @@ export const register: Register = on => {
   on('tool.call', { tool: 'mcp__pii-guard__pii_patterns' }, async ($, e) => {
     const { tool, tool_use_id, consent, agentId, requestMeta, ...input } = e as unknown as Record<string, unknown>
     if (agentId) return { result: { ok: false, message: 'pii_patterns is not available to subagents' } }
-    const outcome = runPatternsTool(await loadConfig($), input)
+    const { user, config, locks } = await loadEffective($)
+    const outcome = runPatternsTool(user, input, locks, config)
     if (outcome.config) await saveConfig($, outcome.config)
     return { result: outcome.answer }
   })
 
   on('command.run', { command: 'pii' }, async ($, e) => {
-    const outcome = runPiiCommand(await loadConfig($), e.args)
+    const { user, config, locks } = await loadEffective($)
+    const outcome = runPiiCommand(user, e.args, locks, config)
     if (outcome.config) await saveConfig($, outcome.config)
     if (outcome.openSettings) {
       await update($, settingsOpenAtom, () => true)
@@ -358,15 +416,15 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) => {
     const E = paneElements($.ui.resolve(e))
-    const [review, queue, allows, settingsOpen, config] = await Promise.all([
-      read($, reviewAtom), read($, queueAtom), read($, sessionAllowsAtom), read($, settingsOpenAtom), loadConfig($),
+    const [review, queue, allows, settingsOpen, effective] = await Promise.all([
+      read($, reviewAtom), read($, queueAtom), read($, sessionAllowsAtom), read($, settingsOpenAtom), loadEffective($),
     ])
     // Subscribes this drawing to config saves, which bump configVersion.
     await $.state.get(configVersion)
     const actions = actionsFor($)
     if (settingsOpen || !review) {
-      return renderSettings(E, config, allows, review !== null, actions)
+      return renderSettings(E, effective.config, allows, review !== null, actions, effective.locks, effective.policy)
     }
-    return renderReview(E, review, config, actions, queue.length)
+    return renderReview(E, review, effective.config, actions, queue.length)
   })
 }

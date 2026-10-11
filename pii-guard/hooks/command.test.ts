@@ -1,6 +1,8 @@
 import { test, expect, mock } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
+import * as commandModule from './command'
+import * as configModule from './config'
 
 function stub(on: On) {
   on('ui.open', () => ({ value: { isPlaced: true as const } }))
@@ -61,4 +63,21 @@ test('bare /pii opens settings; unknown subcommand prints usage', async ($, on) 
   mock.store(on); stub(on)
   expect((await run($, '')).text).toMatch(/settings opened/i)
   expect((await run($, 'bogus')).text).toMatch(/usage/i)
+})
+
+test('policy-locked settings are refused by /pii and marked in list', async ($, on) => {
+  mock.store(on, { config: { version: 1, types: [], watchlist: ['Joanna'], allowlist: [], scanToolReads: false } }); stub(on)
+  const locks = { watchlist: ['acme ltd'], allowlist: ['acme code'], types: ['email'], scanToolReads: true }
+  const { runPiiCommand } = commandModule
+  const user = configModule.defaultConfig()
+  user.watchlist = ['Joanna', 'Acme Ltd']
+  user.allowlist = ['acme code']
+  expect(runPiiCommand(user, 'off email', locks).text).toMatch(/policy/)
+  expect(runPiiCommand(user, 'unwatch acme ltd', locks).text).toMatch(/policy/)
+  expect(runPiiCommand(user, 'unallow acme code', locks).text).toMatch(/policy/)
+  expect(runPiiCommand(user, 'reads off', locks).text).toMatch(/policy/)
+  expect(runPiiCommand(user, 'unwatch joanna', locks).config?.watchlist).toEqual(['Acme Ltd'])
+  const listed = runPiiCommand(user, 'list', locks).text ?? ''
+  expect(listed).toMatch(/email\s+on\s+policy/)
+  expect(listed).toMatch(/card\s+on\s{2}/)
 })

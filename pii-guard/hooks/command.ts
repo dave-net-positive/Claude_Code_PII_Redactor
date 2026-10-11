@@ -1,6 +1,7 @@
-import type { Config } from '../types'
+import type { Config, Locks } from '../types'
 import { addCustomType, removeType, setEnabled, addTerm, removeTerm } from './config'
 import { scan, testPattern } from './detect'
+import { emptyLocks, lockReason } from './policy'
 
 export const USAGE = [
   'Usage:',
@@ -22,56 +23,79 @@ export type CommandOutcome = {
   openSettings?: true
 }
 
-/** Pure: interprets `/pii <args>` against `config`; the caller persists `config` when returned. */
-export function runPiiCommand(config: Config, args: string): CommandOutcome {
+/**
+ * Pure: interprets `/pii <args>`. `config` is the person's own stored config,
+ * which edits apply to; `effective` (with the policy overlaid) is what `list`
+ * and `test` read. The caller persists `config` when returned.
+ */
+export function runPiiCommand(config: Config, args: string, locks: Locks = emptyLocks(), effective: Config = config): CommandOutcome {
   const trimmed = args.trim()
   if (!trimmed) return { openSettings: true }
   const [sub = '', ...rest] = trimmed.split(/\s+/)
   const restText = trimmed.slice(sub.length).trim()
   const changed = (c: Config, text: string): CommandOutcome => ({ config: c, text })
   const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 'es'}`
+  const locked = (reason: string | null): CommandOutcome | null => (reason ? { text: `not changed: ${reason}` } : null)
 
   switch (sub) {
     case 'list': {
-      const rows = config.types.map(t =>
-        `  ${t.id.padEnd(22)} ${t.enabled ? 'on ' : 'off'}  ${t.label}${t.source === 'custom' ? `  /${t.patterns[0]}/` : ''}`)
+      const held = (id: string) => (lockReason(locks, { kind: 'type', id }) ? 'policy' : '')
+      const rows = effective.types.map(t =>
+        `  ${t.id.padEnd(22)} ${t.enabled ? 'on ' : 'off'} ${held(t.id).padEnd(7)}${t.label}${t.source === 'custom' ? `  /${t.patterns[0]}/` : ''}`)
       return { text: [
         'Types:', ...rows,
-        `watchlist: ${config.watchlist.length}, allowlist: ${config.allowlist.length}, scan Read results: ${config.scanToolReads ? 'on' : 'off'}`,
+        `watchlist: ${effective.watchlist.length}${locks.watchlist.length ? ` (${locks.watchlist.length} from policy)` : ''}, `
+        + `allowlist: ${effective.allowlist.length}${locks.allowlist.length ? ` (${locks.allowlist.length} from policy)` : ''}, `
+        + `scan Read results: ${effective.scanToolReads ? 'on' : 'off'}${locks.scanToolReads ? ' (policy)' : ''}`,
       ].join('\n') }
     }
     case 'on': case 'off': {
-      const r = setEnabled(config, rest[0] ?? '', sub === 'on')
-      return r.ok ? changed(r.config, `${rest[0]} is now ${sub}`) : { text: r.reason }
+      const id = rest[0] ?? ''
+      const l = locked(lockReason(locks, { kind: 'type', id }))
+      if (l) return l
+      const r = setEnabled(config, id, sub === 'on')
+      return r.ok ? changed(r.config, `${id} is now ${sub}`) : { text: r.reason }
     }
     case 'add': {
       const id = rest[0] ?? ''
       const regex = restText.slice(id.length).trim()
       if (!id || !regex) return { text: USAGE }
+      const l = locked(lockReason(locks, { kind: 'type', id }))
+      if (l) return l
       const r = addCustomType(config, { id, regex })
       return r.ok
         ? changed(r.config, `added custom:${id.replace(/^custom:/, '')} as /${regex}/giu, enabled`)
         : { text: `not added: ${r.reason}` }
     }
     case 'rm': {
-      const r = removeType(config, rest[0] ?? '')
-      return r.ok ? changed(r.config, `removed ${rest[0]}`) : { text: r.reason }
+      const id = rest[0] ?? ''
+      const l = locked(lockReason(locks, { kind: 'type', id }))
+      if (l) return l
+      const r = removeType(config, id)
+      return r.ok ? changed(r.config, `removed ${id}`) : { text: r.reason }
     }
     case 'watch': return changed(addTerm(config, 'watchlist', restText), `watching "${restText}"`)
-    case 'unwatch': return changed(removeTerm(config, 'watchlist', restText), `no longer watching "${restText}"`)
+    case 'unwatch': {
+      const l = locked(lockReason(locks, { kind: 'watchlist', term: restText }))
+      return l ?? changed(removeTerm(config, 'watchlist', restText), `no longer watching "${restText}"`)
+    }
     case 'allow': return changed(addTerm(config, 'allowlist', restText), `"${restText.toLowerCase()}" will not be reported`)
-    case 'unallow': return changed(removeTerm(config, 'allowlist', restText), `"${restText.toLowerCase()}" removed from allowlist`)
+    case 'unallow': {
+      const l = locked(lockReason(locks, { kind: 'allowlist', term: restText }))
+      return l ?? changed(removeTerm(config, 'allowlist', restText), `"${restText.toLowerCase()}" removed from allowlist`)
+    }
     case 'reads': {
       if (rest[0] !== 'on' && rest[0] !== 'off') return { text: USAGE }
-      return changed({ ...config, scanToolReads: rest[0] === 'on' }, `scan Read results: ${rest[0]}`)
+      const l = locked(lockReason(locks, { kind: 'scanToolReads' }))
+      return l ?? changed({ ...config, scanToolReads: rest[0] === 'on' }, `scan Read results: ${rest[0]}`)
     }
     case 'test': {
       const target = rest[0] ?? ''
       const sample = restText.slice(target.length).trim()
       if (!target || !sample) return { text: USAGE }
-      const type = config.types.find(t => t.id === target || t.id === `custom:${target}`)
+      const type = effective.types.find(t => t.id === target || t.id === `custom:${target}`)
       if (type) {
-        const found = scan(sample, 'test', { ...config, allowlist: [], types: [{ ...type, enabled: true }] })
+        const found = scan(sample, 'test', { ...effective, allowlist: [], types: [{ ...type, enabled: true }] })
         return { text: `${plural(found.length, 'match')} for ${type.id}${found.length ? ': ' + found.map(f => f.value).join(', ') : ''}` }
       }
       const r = testPattern(target, [sample])

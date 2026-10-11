@@ -1,7 +1,8 @@
 import type { ElementTable, RenderSurface } from 'claude-code'
-import type { Config, Decision, Finding, Review, ReviewSection } from '../types'
+import type { Config, Decision, Finding, Locks, PolicyStatus, Review, ReviewSection } from '../types'
 import { CATEGORY_COLOR } from './patterns'
 import { placeholderFor } from './detect'
+import { emptyLocks, lockReason } from './policy'
 
 export type PaneActions = {
   decide(typeId: string, d: Decision): void
@@ -172,10 +173,14 @@ export function renderReview(E: PaneElements, review: Review, config: Config, ac
   )
 }
 
-export function renderSettings(E: PaneElements, config: Config, sessionAllows: string[], hasReview: boolean, actions: PaneActions) {
+export function renderSettings(
+  E: PaneElements, config: Config, sessionAllows: string[], hasReview: boolean, actions: PaneActions,
+  locks: Locks = emptyLocks(), policy: PolicyStatus | null = null,
+) {
   const { Box, Text, Button, Input } = E
   const byCategory = new Map<string, Config['types']>()
   for (const t of config.types) byCategory.set(t.category, [...(byCategory.get(t.category) ?? []), t])
+  const LOCK = '🔒'
   const list = (name: 'watchlist' | 'allowlist', title: string, hint: string) => {
     const prefix = name === 'watchlist' ? 'watch' : 'allow'
     return (
@@ -185,7 +190,9 @@ export function renderSettings(E: PaneElements, config: Config, sessionAllows: s
         {config[name].map(term => (
           <Box gap={1}>
             <Text>{term}</Text>
-            <Button key={`${prefix}:remove:${term}`} label="Remove" plain onPress={() => actions.removeTerm(name, term)} />
+            {lockReason(locks, { kind: name, term })
+              ? <Text dimColor>{`${LOCK} policy`}</Text>
+              : <Button key={`${prefix}:remove:${term}`} label="Remove" plain onPress={() => actions.removeTerm(name, term)} />}
           </Box>
         ))}
         {Input
@@ -197,25 +204,39 @@ export function renderSettings(E: PaneElements, config: Config, sessionAllows: s
   return (
     <Box flexDirection="column" padding={1}>
       <Text bold color="warning">PII guard settings</Text>
+      {policy ? (
+        <Text dimColor>
+          {`${LOCK} Organisation policy: ${policy.path}`}
+          {policy.error
+            ? ` (could not be read: ${policy.error})`
+            : policy.loadedAt ? ` (loaded ${new Date(policy.loadedAt).toLocaleTimeString()})` : ''}
+          {policy.warnings.length ? ` ${policy.warnings.length} entr${policy.warnings.length === 1 ? 'y' : 'ies'} skipped: ${policy.warnings.join('; ')}` : ''}
+        </Text>
+      ) : null}
       {[...byCategory.entries()].map(([cat, types]) => (
         <Box flexDirection="column" marginTop={1}>
           <Text bold>{cat}</Text>
-          {types.map(t => (
-            <Box gap={1}>
-              <Text>{`${t.enabled ? '◼' : '◻'} ${t.label}`}</Text>
-              <Text dimColor>{t.id}</Text>
-              <Button
-                key={`type:${bareId(t.id)}:${t.enabled ? 'off' : 'on'}`}
-                label={t.enabled ? 'Turn off' : 'Turn on'}
-                plain
-                onPress={() => actions.toggleType(t.id, !t.enabled)}
-              />
-              {t.source === 'custom'
-                ? <Button key={`type:${bareId(t.id)}:remove`} label="Remove" plain onPress={() => actions.removeType(t.id)} />
-                : null}
-              {t.source === 'custom' ? <Text dimColor>{`/${t.patterns[0]}/`}</Text> : null}
-            </Box>
-          ))}
+          {types.map(t => {
+            const held = lockReason(locks, { kind: 'type', id: t.id }) !== null
+            return (
+              <Box gap={1}>
+                <Text>{`${t.enabled ? '◼' : '◻'} ${t.label}`}</Text>
+                <Text dimColor>{t.id}</Text>
+                {held
+                  ? <Text dimColor>{`${LOCK} policy`}</Text>
+                  : <Button
+                      key={`type:${bareId(t.id)}:${t.enabled ? 'off' : 'on'}`}
+                      label={t.enabled ? 'Turn off' : 'Turn on'}
+                      plain
+                      onPress={() => actions.toggleType(t.id, !t.enabled)}
+                    />}
+                {t.source === 'custom' && !held
+                  ? <Button key={`type:${bareId(t.id)}:remove`} label="Remove" plain onPress={() => actions.removeType(t.id)} />
+                  : null}
+                {t.source === 'custom' ? <Text dimColor>{`/${t.patterns[0]}/`}</Text> : null}
+              </Box>
+            )
+          })}
         </Box>
       ))}
       {list('watchlist', 'Names watchlist', 'Add name or term')}
@@ -223,12 +244,14 @@ export function renderSettings(E: PaneElements, config: Config, sessionAllows: s
       <Box gap={1} marginTop={1}>
         <Text bold>Scan Read tool results:</Text>
         <Text>{config.scanToolReads ? 'on' : 'off'}</Text>
-        <Button
-          key={config.scanToolReads ? 'reads:off' : 'reads:on'}
-          label={config.scanToolReads ? 'Turn off' : 'Turn on'}
-          plain
-          onPress={() => actions.setScanReads(!config.scanToolReads)}
-        />
+        {locks.scanToolReads
+          ? <Text dimColor>{`${LOCK} policy`}</Text>
+          : <Button
+              key={config.scanToolReads ? 'reads:off' : 'reads:on'}
+              label={config.scanToolReads ? 'Turn off' : 'Turn on'}
+              plain
+              onPress={() => actions.setScanReads(!config.scanToolReads)}
+            />}
       </Box>
       {sessionAllows.length > 0 ? (
         <Box flexDirection="column" marginTop={1}>

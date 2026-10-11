@@ -1,6 +1,8 @@
 import { test, expect, mock } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
+import * as toolModule from './tool'
+import * as configModule from './config'
 
 const TOOL = 'mcp__pii-guard__pii_patterns'
 
@@ -96,4 +98,14 @@ test('subagent calls are refused', async ($, on) => {
   mock.store(on); stub(on)
   const r = await $.tool.call({ tool: TOOL, action: 'list', agentId: 'sub-1' } as never)
   expect('result' in r && (r.result as Answer).ok).toBe(false)
+})
+
+test('the tool cannot add a custom type whose id a policy holds', async ($, on) => {
+  mock.store(on); stub(on)
+  const { runPatternsTool } = toolModule
+  const user = configModule.defaultConfig()
+  const locks = { watchlist: [], allowlist: [], types: ['custom:acme-ref'], scanToolReads: false }
+  const r = runPatternsTool(user, { action: 'add', id: 'acme-ref', regex: 'x+' }, locks)
+  expect(r.answer.ok).toBe(false)
+  expect(r.answer.message).toMatch(/policy/)
 })

@@ -1,7 +1,8 @@
 import type { ToolSpec } from 'claude-code'
-import type { Config } from '../types'
+import type { Config, Locks } from '../types'
 import { addCustomType, setEnabled, addTerm } from './config'
 import { testPattern } from './detect'
+import { emptyLocks, lockReason } from './policy'
 
 export const TOOL_SPEC: ToolSpec = {
   name: 'pii_patterns',
@@ -36,26 +37,31 @@ export type ToolOutcome = { answer: ToolAnswer; config?: Config }
 
 const str = (v: unknown) => (typeof v === 'string' ? v : undefined)
 
-/** Pure: interprets one `pii_patterns` call against `config`; the caller persists `config` when returned. */
-export function runPatternsTool(config: Config, input: Record<string, unknown>): ToolOutcome {
+/**
+ * Pure: interprets one `pii_patterns` call. `config` is the person's stored
+ * config, which edits apply to; `effective` (policy overlaid) is what `list`
+ * and `test` read. The caller persists `config` when returned.
+ */
+export function runPatternsTool(config: Config, input: Record<string, unknown>, locks: Locks = emptyLocks(), effective: Config = config): ToolOutcome {
   const action = str(input.action)
   const fail = (message: string): ToolOutcome => ({ answer: { ok: false, message } })
   const saved = (c: Config, message: string, data?: unknown): ToolOutcome => ({ answer: { ok: true, message, data }, config: c })
   switch (action) {
     case 'list':
-      return { answer: { ok: true, message: `${config.types.length} types`, data: {
-        types: config.types.map(t => ({
+      return { answer: { ok: true, message: `${effective.types.length} types`, data: {
+        types: effective.types.map(t => ({
           id: t.id, label: t.label, category: t.category, enabled: t.enabled, source: t.source,
           placeholder: t.placeholder, patterns: t.source === 'custom' ? t.patterns : undefined,
+          policy: lockReason(locks, { kind: 'type', id: t.id }) ? true : undefined,
         })),
         // Counts only: the watchlist holds names, which are themselves personal data.
-        watchlistCount: config.watchlist.length, allowlistCount: config.allowlist.length, scanToolReads: config.scanToolReads,
+        watchlistCount: effective.watchlist.length, allowlistCount: effective.allowlist.length, scanToolReads: effective.scanToolReads,
       } } }
     case 'test': {
       const samples = Array.isArray(input.samples) ? input.samples.filter((s): s is string => typeof s === 'string') : []
       if (samples.length === 0) return fail('samples required')
       const id = str(input.id)
-      const type = id ? config.types.find(t => t.id === id || t.id === `custom:${id}`) : undefined
+      const type = id ? effective.types.find(t => t.id === id || t.id === `custom:${id}`) : undefined
       const regex = str(input.regex)
       const sources = type ? type.patterns : regex ? [regex] : []
       if (sources.length === 0) return fail('give regex or a known id')
@@ -71,11 +77,15 @@ export function runPatternsTool(config: Config, input: Record<string, unknown>):
       const id = str(input.id)
       const regex = str(input.regex)
       if (!id || !regex) return fail('id and regex required')
+      const held = lockReason(locks, { kind: 'type', id })
+      if (held) return fail(held)
       const r = addCustomType(config, { id, regex, label: str(input.label), placeholder: str(input.placeholder) })
       return r.ok ? saved(r.config, `added custom:${id.replace(/^custom:/, '')}, enabled`) : fail(r.reason)
     }
     case 'toggle': {
       if (input.enabled !== true) return fail('only enabled=true is accepted here; turning a type off is done by the person with /pii off <id>')
+      const held = lockReason(locks, { kind: 'type', id: str(input.id) ?? '' })
+      if (held) return fail(held)
       const r = setEnabled(config, str(input.id) ?? '', true)
       return r.ok ? saved(r.config, `${String(input.id)} enabled`) : fail(r.reason)
     }

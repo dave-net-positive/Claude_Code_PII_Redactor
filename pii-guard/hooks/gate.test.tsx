@@ -269,3 +269,51 @@ test('a clean Read passes untouched with reads on; subagent Reads are not gated'
   const sub = await $.tool.call({ tool: 'Read', file_path: 'C:/x/a.txt', agentId: 'sub-1' } as never)
   expect('text' in sub && sub.text).toBe('a@b.co')
 })
+
+const POLICY_PATH = 'C:/ProgramData/pii-guard/policy.json'
+// The engine normalises paths before the fs hooks see them (backslashes on Windows).
+const isPolicy = (p: string) => p.split('\\').join('/').toLowerCase() === POLICY_PATH.toLowerCase()
+const policyFs = (doc: () => string, mtime: () => number = () => 1) => ({
+  stat: (p: string) => { if (isPolicy(p)) return { kind: 'file' as const, size: 1, mtimeMs: mtime(), isLink: false }; throw new Error('ENOENT') },
+  read: (p: string) => { if (isPolicy(p)) return doc(); throw new Error('ENOENT') },
+})
+
+test('a policy watchlist name is enforced and shown locked in settings', { options: { policyFile: POLICY_PATH } }, async ($, on) => {
+  mock.store(on)
+  const { log } = stub(on, { fs: policyFs(() => JSON.stringify({ watchlist: ['Nightjar'], types: { email: { enabled: true } }, scanToolReads: false })) })
+  expect(await $.prompt.submit(submit('project nightjar status'))).toEqual(HELD)
+  const ui = await mount($)
+  await ui.press({ key: 'settings' })
+  expect(await ui.find({ key: 'watch:remove:Nightjar' })).toBeFalsy()
+  expect(await ui.find({ text: /Nightjar/ })).toBeTruthy()
+  expect(await ui.find({ key: 'type:email:off' })).toBeFalsy()
+  expect(await ui.find({ key: 'reads:on' })).toBeFalsy()
+  expect(await ui.find({ text: /policy\.json/ })).toBeTruthy()
+  expect(log.some(l => l.startsWith('toast:pii-guard: policy'))).toBe(false)
+})
+
+test('a malformed policy file warns once and does not block prompts', { options: { policyFile: POLICY_PATH } }, async ($, on) => {
+  mock.store(on)
+  const { log } = stub(on, { fs: policyFs(() => '{ not json') })
+  expect(await $.prompt.submit(submit('hello'))).toEqual({ text: 'hello' })
+  expect(await $.prompt.submit(submit('hello again'))).toEqual({ text: 'hello again' })
+  expect(log.filter(l => l.startsWith('toast:pii-guard: policy')).length).toBe(1)
+})
+
+test('a changed policy file is re-read on its modification time', { options: { policyFile: POLICY_PATH } }, async ($, on) => {
+  mock.store(on)
+  let doc = JSON.stringify({ watchlist: [] })
+  let mtime = 1
+  stub(on, { fs: policyFs(() => doc, () => mtime) })
+  expect(await $.prompt.submit(submit('nightjar'))).toEqual({ text: 'nightjar' })
+  doc = JSON.stringify({ watchlist: ['Nightjar'] })
+  expect(await $.prompt.submit(submit('nightjar'))).toEqual({ text: 'nightjar' })
+  mtime = 2
+  expect(await $.prompt.submit(submit('nightjar'))).toEqual(HELD)
+})
+
+test('a missing policy path leaves the user config alone', { options: { policyFile: POLICY_PATH } }, async ($, on) => {
+  mock.store(on); const { log } = stub(on)
+  expect(await $.prompt.submit(submit('nightjar'))).toEqual({ text: 'nightjar' })
+  expect(log.filter(l => l.startsWith('toast:pii-guard: policy')).length).toBe(1)
+})

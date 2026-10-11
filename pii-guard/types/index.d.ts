@@ -24,6 +24,33 @@ export type Config = {
   scanToolReads: boolean
 }
 
+/** An organisation's policy file, parsed. Every list may be empty. */
+export type Policy = {
+  watchlist: string[]
+  /** Lower-cased. */
+  allowlist: string[]
+  types: Record<string, { enabled: boolean }>
+  customTypes: PiiType[]
+  scanToolReads?: boolean
+}
+
+/** What a policy holds, so the pane, /pii and the tool refuse to change it. Terms lower-cased. */
+export type Locks = {
+  watchlist: string[]
+  allowlist: string[]
+  /** Type ids whose enabled state, or existence (policy custom types), is held. */
+  types: string[]
+  scanToolReads: boolean
+}
+
+/** How the policy file stands, for the settings view. */
+export type PolicyStatus = {
+  path: string
+  loadedAt: number | null
+  error: string | null
+  warnings: string[]
+}
+
 export type Finding = {
   typeId: string
   value: string

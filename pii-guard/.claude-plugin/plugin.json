@@ -7,5 +7,13 @@
     "email": "dave@net-positive.uk"
   },
   "license": "MIT",
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "policyFile": {
+      "type": "string",
+      "title": "Policy file",
+      "description": "Path to an organisation policy JSON (watchlist, allowlist, type states, custom types, scanToolReads) that is overlaid on this user's settings and locked. Leave empty for none.",
+      "required": false
+    }
+  }
 }
