@@ -11,6 +11,7 @@ export function defaultConfig(): Config {
     watchlist: [],
     allowlist: [...DEFAULT_ALLOWLIST],
     scanToolReads: false,
+    scrubLog: true,
   }
 }
 
@@ -57,6 +58,7 @@ export function mergeBuiltins(stored: unknown): Config {
     watchlist: strings(stored.watchlist),
     allowlist: 'allowlist' in stored ? strings(stored.allowlist) : base.allowlist,
     scanToolReads: stored.scanToolReads === true,
+    scrubLog: stored.scrubLog !== false,
   }
 }
 

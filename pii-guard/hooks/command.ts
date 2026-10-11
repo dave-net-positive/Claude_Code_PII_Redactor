@@ -14,6 +14,7 @@ export const USAGE = [
   '  /pii allow <term> | unallow <term>',
   '  /pii test <id|regex> <sample text>',
   '  /pii reads on|off         scan Read tool results',
+  '  /pii scrub on|off         star out redacted values in the local session log',
 ].join('\n')
 
 export type CommandOutcome = {
@@ -86,6 +87,10 @@ export function runPiiCommand(config: Config, args: string, locks: Locks = empty
     case 'unallow': {
       const l = locked(lockReason(locks, { kind: 'allowlist', term: restText }))
       return l ?? changed(removeTerm(config, 'allowlist', restText), `"${restText.toLowerCase()}" removed from allowlist`)
+    }
+    case 'scrub': {
+      if (rest[0] !== 'on' && rest[0] !== 'off') return { text: USAGE }
+      return changed({ ...config, scrubLog: rest[0] === 'on' }, `local log scrub: ${rest[0]}`)
     }
     case 'reads': {
       if (rest[0] !== 'on' && rest[0] !== 'off') return { text: USAGE }

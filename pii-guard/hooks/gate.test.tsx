@@ -360,3 +360,57 @@ test('the review Allowlist button refuses a policy watchlist name and keeps the 
   expect(await ui.find({ key: 'decide:name:redact' })).toBeTruthy()
   expect(log.some(l => /toast:.*watchlist/.test(l))).toBe(true)
 })
+
+const TRANSCRIPT = 'C:/Users/d/.claude/projects/x/session.jsonl'
+
+test('after Send with a redaction the local log is scrubbed in place through a child process', async ($, on) => {
+  mock.store(on); const { log } = stub(on)
+  let argv: readonly string[] = []
+  on('process.run', ($, e) => { argv = e.argv; return { value: { exitCode: 0, stdout: '2', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } } })
+  on('env.get', ($, e) => ({ value: e.name === 'OS' ? 'Windows_NT' : undefined }))
+  on('classic.UserPromptSubmit', () => ({}))
+  await $.classic.UserPromptSubmit({ prompt: 'mail a@b.co', transcript_path: TRANSCRIPT, session_id: 's', cwd: 'E:/x' } as never)
+  expect(await $.prompt.submit(submit('mail a@b.co'))).toEqual(HELD)
+  const ui = await mount($)
+  await ui.press({ key: 'send' })
+  expect(argv[0]).toBe('powershell')
+  expect(argv.join(' ')).not.toContain('a@b.co')
+  expect(log.some(l => /toast:.*scrubbed 2/.test(l))).toBe(true)
+})
+
+test('when the child process is unavailable a small log is patched through fs', async ($, on) => {
+  mock.store(on)
+  const content = JSON.stringify({ type: 'queue-operation', operation: 'enqueue', content: 'mail a@b.co' }) + '\n' + JSON.stringify({ type: 'user', message: { role: 'user', content: 'mail [EMAIL_1]' } })
+  // The kit stamps its own transcript_path over the one given, so serve any session log.
+  const isTranscript = (p: string) => p.toLowerCase().endsWith('.jsonl')
+  const { log } = stub(on, { fs: {
+    stat: p => { if (isTranscript(p)) return { kind: 'file', size: content.length, mtimeMs: 1, isLink: false }; throw new Error('ENOENT') },
+    read: p => { if (isTranscript(p)) return content; throw new Error('ENOENT') },
+  } })
+  let written = ''
+  on('process.run', () => { throw new Error('process is not available here') })
+  on('env.get', () => ({ value: undefined }))
+  on('fs.write', ($, e) => { written = e.text; return { value: undefined } })
+  on('classic.UserPromptSubmit', () => ({}))
+  await $.classic.UserPromptSubmit({ prompt: 'mail a@b.co', transcript_path: TRANSCRIPT, session_id: 's', cwd: 'E:/x' } as never)
+  expect(await $.prompt.submit(submit('mail a@b.co'))).toEqual(HELD)
+  const ui = await mount($)
+  await ui.press({ key: 'send' })
+  expect(written).toContain('mail ******')
+  expect(written).not.toContain('a@b.co')
+  expect(written).toContain('mail [EMAIL_1]')
+  expect(log.some(l => /toast:.*scrubbed 1/.test(l))).toBe(true)
+})
+
+test('nothing allowed means nothing scrubbed; scrub can be turned off', async ($, on) => {
+  mock.store(on, { config: { version: 1, types: [], watchlist: [], allowlist: [], scanToolReads: false, scrubLog: false } }); stub(on)
+  let ran = 0
+  on('process.run', () => { ran++; return { value: { exitCode: 0, stdout: '1', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } } })
+  on('env.get', () => ({ value: 'Windows_NT' }))
+  on('classic.UserPromptSubmit', () => ({}))
+  await $.classic.UserPromptSubmit({ prompt: 'mail a@b.co', transcript_path: TRANSCRIPT, session_id: 's', cwd: 'E:/x' } as never)
+  expect(await $.prompt.submit(submit('mail a@b.co'))).toEqual(HELD)
+  const ui = await mount($)
+  await ui.press({ key: 'send' })
+  expect(ran).toBe(0)
+})

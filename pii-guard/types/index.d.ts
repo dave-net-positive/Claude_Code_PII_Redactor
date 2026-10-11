@@ -22,6 +22,8 @@ export type Config = {
   watchlist: string[]
   allowlist: string[]
   scanToolReads: boolean
+  /** Patch the typed text out of the local session log after a redaction (default true). */
+  scrubLog: boolean
 }
 
 /** An organisation's policy file, parsed. Every list may be empty. */

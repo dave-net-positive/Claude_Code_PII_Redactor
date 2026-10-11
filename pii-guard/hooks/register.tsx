@@ -8,6 +8,7 @@ import {
 import { scan, redact, placeholderFor, MAX_SCAN } from './detect'
 import type { Numbering } from './detect'
 import { parsePolicy, applyPolicy, emptyLocks, lockReason } from './policy'
+import { patchRecords, scrubArgv } from './scrub'
 import { runPiiCommand } from './command'
 import { TOOL_SPEC, runPatternsTool } from './tool'
 import { paneElements, renderReview, renderSettings } from './review'
@@ -83,6 +84,56 @@ async function saveConfig($: EngineInterface, config: Config): Promise<void> {
 
 /** Set once anything was redacted this session: the model then gets a standing note about placeholders. */
 let everRedacted = false
+
+/** The session log's path, learned from the engine's classic UserPromptSubmit event. */
+let transcriptPath: string | null = null
+let scrubWarned = false
+
+const distinctRedacted = (findings: Finding[], decisions: Record<string, Decision>): string[] =>
+  [...new Set(findings.filter(f => (decisions[f.typeId] ?? 'redact') === 'redact').map(f => f.value.trim()).filter(Boolean))]
+
+/**
+ * Stars out `values` in the typed-prompt records of the local session log.
+ * In place through a child process (any file size); through $.fs for a small
+ * log where no child process can run. Best effort: failure warns once.
+ */
+async function scrubLocalLog($: EngineInterface, config: Config, values: string[]): Promise<void> {
+  if (!config.scrubLog || values.length === 0 || !transcriptPath) return
+  const path = transcriptPath
+  let patched: number | null = null
+  try {
+    const os = await $.env.get('OS').catch(() => undefined)
+    const argv = scrubArgv(os === 'Windows_NT' ? 'windows' : 'posix', path, values)
+    const r = await $.process.run(argv, { timeoutMs: 60_000 })
+    if (r.exitCode === 0) patched = Number(r.stdout.trim()) || 0
+    else $.ui.log(`pii-guard: log scrub exited ${r.exitCode}: ${r.stderr.slice(0, 300)}`, { to: 'debug' })
+  } catch (err) {
+    $.ui.log(`pii-guard: log scrub child process unavailable: ${(err as Error).message}`, { to: 'debug' })
+  }
+  if (patched === null) {
+    try {
+      const st = await $.fs.stat(path)
+      if (st.size <= 4 * 1024 * 1024) {
+        const text = await $.fs.read(path)
+        if (typeof text === 'string') {
+          const r = patchRecords(text, values)
+          if (r.patched) await $.fs.write(path, r.text)
+          patched = r.patched
+        }
+      }
+    } catch (err) {
+      $.ui.log(`pii-guard: log scrub through fs failed: ${(err as Error).message}`, { to: 'debug' })
+    }
+  }
+  if (patched === null) {
+    if (!scrubWarned) {
+      scrubWarned = true
+      $.ui.toast('pii-guard: could not scrub the local session log; the typed text remains in it (see debug log)')
+    }
+  } else if (patched > 0) {
+    $.ui.toast(`pii-guard: scrubbed ${patched} local log record(s)`)
+  }
+}
 
 /** What the last sent prompt agreed, for file attachments the engine raises after it. */
 let agreed: { decisions: Record<string, Decision>; numbering: Numbering } | null = null
@@ -195,6 +246,7 @@ async function sendReview($: EngineInterface, review: Review): Promise<void> {
   if (count) $.ui.toast(`pii-guard redacted ${count} value(s)`)
   const text = blocks.length ? `${r.text}\n\n${blocks.join('\n\n')}` : r.text
   await $.prompt.submit({ text, asUser: true })
+  if (count) await scrubLocalLog($, config, distinctRedacted(review.findings, decisions))
 }
 
 async function cancelReview($: EngineInterface): Promise<void> {
@@ -228,6 +280,7 @@ function actionsFor($: EngineInterface): PaneActions {
     addTerm: (list, term) => void edit((c, locks) => (list === 'allowlist' ? lockReason(locks, { kind: 'allowlist-add', term }) : null) ?? addTermTo(c, list, term)),
     removeTerm: (list, term) => void edit((c, locks) => lockReason(locks, { kind: list, term }) ?? removeTermFrom(c, list, term)),
     setScanReads: on => void edit((c, locks) => lockReason(locks, { kind: 'scanToolReads' }) ?? { ...c, scanToolReads: on }),
+    setScrub: on => void edit(c => ({ ...c, scrubLog: on })),
     revokeSessionAllow: id => void update($, sessionAllowsAtom, l => l.filter(x => x !== id)),
     allowlistValue: (typeId, value) => void allowlistAndTrim($, value, f => f.typeId === typeId && f.value.trim().toLowerCase() === value.trim().toLowerCase()),
     allowlistWord: (typeId, word) => void allowlistAndTrim($, word, f =>
@@ -288,6 +341,12 @@ export const register: Register = (on, options) => {
     return { text: outcome.text }
   })
 
+  // The engine's classic event carries the session log's path; keep it for the scrub.
+  on('classic.UserPromptSubmit', async ($, e, next) => {
+    if (typeof e.transcript_path === 'string' && e.transcript_path) transcriptPath = e.transcript_path
+    return next(e)
+  })
+
   // The person closing the pane (close mark, Escape) while a prompt is held cancels it.
   on('ui.close', { id: PANE_ID }, async ($, e, next) => {
     if (e.origin.kind === 'person') {
@@ -327,12 +386,14 @@ export const register: Register = (on, options) => {
 
       const ph = (id: string) => placeholderFor(config, id)
       const promptFindings = findings.filter(f => f.section === 'prompt')
-      const redactEverything = () => {
+      const redactEverything = async () => {
         const all = redactAll(findings)
         const r = redact(e.text, promptFindings, all, {}, ph)
         agreed = { decisions: all, numbering: r.numbering }
         if (r.count) everRedacted = true
-        return next({ ...e, text: r.text, context: r.count ? [...(e.context ?? []), PLACEHOLDER_NOTE] : e.context })
+        const out = await next({ ...e, text: r.text, context: r.count ? [...(e.context ?? []), PLACEHOLDER_NOTE] : e.context })
+        if (r.count) await scrubLocalLog($, config, distinctRedacted(findings, all))
+        return out
       }
 
       // Nobody can answer where nothing draws (a -p run). The desktop app is SDK-hosted

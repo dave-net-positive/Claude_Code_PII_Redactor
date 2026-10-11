@@ -15,6 +15,7 @@ export type PaneActions = {
   addTerm(list: 'watchlist' | 'allowlist', term: string): void
   removeTerm(list: 'watchlist' | 'allowlist', term: string): void
   setScanReads(on: boolean): void
+  setScrub(on: boolean): void
   revokeSessionAllow(id: string): void
   /** Add this exact value to the allowlist and drop it from the review shown. */
   allowlistValue(typeId: string, value: string): void
@@ -325,6 +326,16 @@ export function renderSettings(
               plain
               onPress={() => actions.setScanReads(!config.scanToolReads)}
             />}
+      </Box>
+      <Box gap={1} marginTop={1}>
+        <Text bold>Scrub the local session log after a redaction:</Text>
+        <Text>{config.scrubLog ? 'on' : 'off'}</Text>
+        <Button
+          key={config.scrubLog ? 'scrub:off' : 'scrub:on'}
+          label={config.scrubLog ? 'Turn off' : 'Turn on'}
+          plain
+          onPress={() => actions.setScrub(!config.scrubLog)}
+        />
       </Box>
       {sessionAllows.length > 0 ? (
         <Box flexDirection="column" marginTop={1}>

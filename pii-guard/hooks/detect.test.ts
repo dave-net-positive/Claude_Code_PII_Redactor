@@ -9,6 +9,7 @@ const config = (over: Partial<Config> = {}): Config => ({
   watchlist: [],
   allowlist: [...DEFAULT_ALLOWLIST],
   scanToolReads: false,
+  scrubLog: true,
   ...over,
 })
 

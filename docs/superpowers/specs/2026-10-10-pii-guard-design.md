@@ -476,6 +476,20 @@ in the category colour, values as chips with the Allowlist buttons, the three
 decision buttons beneath; two columns of cards from 120 body columns; footer
 with hotkeys. Same tree on every surface.
 
+### Local session-log scrub (v1.2)
+
+The engine writes the typed prompt to the session's `.jsonl` as
+`queue-operation` and `last-prompt` records before any hook runs; a dropped
+prompt therefore persists on disk even though it never reaches the model. The
+mod learns the log's path from the classic `UserPromptSubmit` event and, after
+a redaction (pane Send, headless, or the attachment dialog's redact), stars out
+each redacted value in those record lines only, in place and byte-length
+preserving, through a child process (`powershell` on Windows, `perl`
+elsewhere), so a concurrent append cannot be lost. Where no child process can
+run and the log is under 4 MiB, `$.fs` rewrites it instead. Conversation
+messages are never touched. Failure warns once per session. `scrubLog`
+(default true) in the config; `/pii scrub on|off`; a settings toggle.
+
 ### Direction for the pane
 
 If mods become available in desktop chat or Cowork, a `Client` surface module

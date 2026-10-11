@@ -74,7 +74,7 @@ All start enabled. Turn off the ones a project tolerates.
 ## Configuration
 
 - **In the review itself** every detected value has an **Allowlist** button, and each word of a flagged name pair has its own, so one press on "Microsoft" stops every Microsoft product being flagged again. When nothing is left to review the prompt is sent as typed.
-- **`/pii`** opens the settings pane: toggle types, edit the names watchlist and the false-positive allowlist, turn Read scanning on. A single-word allowlist entry suppresses any name pair that contains it; the default list covers common vendors, products, places and days.
+- **`/pii`** opens the settings pane: toggle types, edit the names watchlist and the false-positive allowlist, turn Read scanning on, turn the local log scrub off. A single-word allowlist entry suppresses any name pair that contains it; the default list covers common vendors, products, places and days.
 - **`/pii add <id> <regex>`** adds a custom type. **`/pii test <id|regex> <sample text>`** shows what a pattern matches. **`/pii list`** shows everything.
 - **Ask Claude.** "Add a pattern for our ticket ids like REF-123456" makes Claude use the `pii_patterns` tool to test a regex against samples and add it. The tool can only strengthen the guard (list, test, add a type, add a watchlist name, turn a type on). Turning types off, removing them, allowlisting and unwatching are yours alone through `/pii`, so an injected instruction cannot switch the guard off.
 
@@ -114,6 +114,14 @@ The policy file is JSON; every key is optional:
 Everything the policy names is overlaid on each user's own settings and **locked**: the settings pane shows a lock instead of a button, and `/pii` and the `pii_patterns` tool refuse to change it. Anything the policy does not mention stays the user's to set. The file is re-read whenever its modification time changes, so an edit lands without a restart. If the path is set but the file is missing or malformed, the user sees one warning per session and their own settings apply alone; a broken policy never blocks prompts.
 
 Distribute the file by MDM, a share, or a repo checkout. Keep it readable by the user account Claude Code runs as.
+
+## What is and isn't protected
+
+Tested by searching this machine after a redacted prompt:
+
+- **The model and the API.** A held prompt never becomes a conversation message. Only the redacted resubmission does, so no later turn can carry the original. Allowed values, and anything sent before the mod was active, are in the conversation for good.
+- **Your local session log.** Claude Code writes what you typed to the session's `.jsonl` before any hook runs, in `queue-operation` and `last-prompt` records. After a redaction the mod patches those records in place, replacing each redacted value with the same number of `*` so the file's structure is untouched. This runs through PowerShell on Windows and perl elsewhere, with a plain file rewrite as a fallback for logs under 4 MB. It is best effort: it cannot reach backups, sync copies, or the app's memory, and the UI keeps showing what you typed until the session reloads. Turn it off with `/pii scrub off`.
+- **Not covered.** Subagent prompts, `Bash` and `Grep` output, image or PDF content, and whatever the desktop app may send on its own.
 
 ## Placeholders
 
