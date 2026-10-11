@@ -417,6 +417,71 @@ Found during implementation and the final review; the code is the authority wher
 8. **ReDoS lint** is a small parser: an unbounded repeated group that contains a variable-width quantifier or an alternation is refused; bounded repeats are allowed.
 9. **`PiiType.caseSensitive`** added; the name heuristic compiles without the `i` flag.
 
+## v1.1 additions (2026-10-11)
+
+### Word-level allowlist for the name heuristic
+
+A hit produced by the capitalised-pair heuristic (never a watchlist hit, never
+another type) is dropped when any whole word of it, lower-cased, is a
+single-word allowlist entry. `microsoft` therefore covers Microsoft Teams and
+Microsoft Azure. The default allowlist becomes a list of vendor, product and
+place words plus a few pairs that have no safe single word.
+
+### Allowlist from the review pane
+
+Under each detected type the pane lists the distinct values found (at most 10,
+then "+N more"), each with an **Allowlist** button that adds the exact value to
+the user's allowlist, saves, and removes its findings from the current review.
+For the name type each word of a pair also gets an **Allowlist "Word"** button.
+If no findings and no unscannable attachments remain, the held prompt is sent
+unchanged at once and a toast says so.
+
+### Policy file
+
+`plugin.json` declares one `userConfig` option, `policyFile` (string path). An
+administrator sets it in managed settings under
+`pluginConfigs["pii-guard@<marketplace>"].options.policyFile`; a user may set
+it in their own settings. Unset, nothing changes.
+
+The file is JSON; every key optional:
+
+```json
+{
+  "version": 1,
+  "watchlist": ["Acme Ltd"],
+  "allowlist": ["acme code"],
+  "types": { "email": { "enabled": true }, "name": { "enabled": false } },
+  "customTypes": [{ "id": "acme-ref", "label": "Acme reference", "regex": "\bACME-\d{6}\b", "placeholder": "ACMEREF" }],
+  "scanToolReads": true
+}
+```
+
+The policy is overlaid on the user's stored config at every load. Policy
+watchlist and allowlist entries, policy custom types, the enabled state of any
+type the policy names, and `scanToolReads` when present are **locked**: the
+pane shows a lock marker and no control, `/pii` and `pii_patterns` refuse to
+change them. Policy regexes pass the same lint; a rejected one is skipped and
+reported. The file is re-read when its modification time changes. A set path
+whose file is missing or malformed produces one toast per session and a debug
+log line, and the user's config applies alone: a broken policy must not stop
+prompts.
+
+`/pii list` marks locked rows `policy`; the settings pane shows the policy
+path and its last load time.
+
+### Pane redesign (tier 1)
+
+Header line with counts; one bordered card per detected type, border and badge
+in the category colour, values as chips with the Allowlist buttons, the three
+decision buttons beneath; two columns of cards from 120 body columns; footer
+with hotkeys. Same tree on every surface.
+
+### Direction for the pane
+
+If mods become available in desktop chat or Cowork, a `Client` surface module
+becomes the primary pane and the tier 1 tree the fallback where the surface
+cannot host one.
+
 ## v2 backlog
 
 Recorded here so it is not lost:

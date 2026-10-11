@@ -69,17 +69,51 @@ All start enabled. Turn off the ones a project tolerates.
 | Date of birth | a date near "DOB", "date of birth" or "born" |
 | API key or secret | AWS, GitHub, Slack, Anthropic, OpenAI, Google keys, JWTs, PEM private keys, `password=` style assignments |
 | Health terms | a short keyword list and ICD-10 codes |
-| Personal name | your watchlist, plus a capitalised-pair heuristic filtered by an allowlist of common non-names |
+| Personal name | your watchlist, plus a capitalised-pair heuristic; a pair is ignored when any of its words is on the allowlist |
 
 ## Configuration
 
-- **`/pii`** opens the settings pane: toggle types, edit the names watchlist and the false-positive allowlist, turn Read scanning on.
+- **In the review itself** every detected value has an **Allowlist** button, and each word of a flagged name pair has its own, so one press on "Microsoft" stops every Microsoft product being flagged again. When nothing is left to review the prompt is sent as typed.
+- **`/pii`** opens the settings pane: toggle types, edit the names watchlist and the false-positive allowlist, turn Read scanning on. A single-word allowlist entry suppresses any name pair that contains it; the default list covers common vendors, products, places and days.
 - **`/pii add <id> <regex>`** adds a custom type. **`/pii test <id|regex> <sample text>`** shows what a pattern matches. **`/pii list`** shows everything.
 - **Ask Claude.** "Add a pattern for our ticket ids like REF-123456" makes Claude use the `pii_patterns` tool to test a regex against samples and add it. The tool can only strengthen the guard (list, test, add a type, add a watchlist name, turn a type on). Turning types off, removing them, allowlisting and unwatching are yours alone through `/pii`, so an injected instruction cannot switch the guard off.
 
 Custom regexes run with flags `giu`, must be 500 characters or fewer, and are rejected if they nest an unbounded repeat around a variable-width quantifier or match the empty string.
 
 Settings live in the mod's own store file under your Claude configuration directory. The watchlist holds names, which are personal data in their own right: keep that directory private.
+
+## Organisation policy (admins)
+
+An administrator can push settings that users cannot change. Point the mod at a policy file through its `policyFile` option in managed settings (the same file you use for `enabledPlugins`):
+
+```json
+{
+  "pluginConfigs": {
+    "pii-guard@net-positive-mods": {
+      "options": { "policyFile": "C:\\ProgramData\\pii-guard\\policy.json" }
+    }
+  }
+}
+```
+
+The policy file is JSON; every key is optional:
+
+```json
+{
+  "version": 1,
+  "watchlist": ["Acme Ltd", "Project Nightjar"],
+  "allowlist": ["acme code"],
+  "types": { "email": { "enabled": true }, "name": { "enabled": false } },
+  "customTypes": [
+    { "id": "acme-ref", "label": "Acme reference", "regex": "\\bACME-\\d{6}\\b", "placeholder": "ACMEREF" }
+  ],
+  "scanToolReads": true
+}
+```
+
+Everything the policy names is overlaid on each user's own settings and **locked**: the settings pane shows a lock instead of a button, and `/pii` and the `pii_patterns` tool refuse to change it. Anything the policy does not mention stays the user's to set. The file is re-read whenever its modification time changes, so an edit lands without a restart. If the path is set but the file is missing or malformed, the user sees one warning per session and their own settings apply alone; a broken policy never blocks prompts.
+
+Distribute the file by MDM, a share, or a repo checkout. Keep it readable by the user account Claude Code runs as.
 
 ## Placeholders
 
@@ -89,7 +123,7 @@ Redacted values become numbered placeholders, the same value always getting the 
 
 - Subagent prompts, and `Bash` and `Grep` output, are not scanned.
 - On the Read path the decision covers every type found in that file at once.
-- Configuration is global, not per project.
+- Configuration is per user plus an optional organisation policy; there is no per-project layer yet.
 - Image and PDF *content* is never scanned.
 
 See the [design spec](docs/superpowers/specs/2026-10-10-pii-guard-design.md) for the full v1 behaviour and the v2 backlog, and [pii-guard/README.md](pii-guard/README.md) for the mod's own notes.

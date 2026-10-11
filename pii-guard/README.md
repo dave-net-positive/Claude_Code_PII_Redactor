@@ -31,7 +31,9 @@ email, phone, UK postcode, NI number, NHS number (mod-11 checked), passport, UK 
 
 ## Configuration
 
-- `/pii` opens the settings pane: toggle types, edit the names watchlist and the allowlist, turn Read scanning on.
+- Every value in the review has an **Allowlist** button; name pairs also get one button per word. When nothing is left to review the prompt is sent as typed.
+- `/pii` opens the settings pane: toggle types, edit the names watchlist and the allowlist, turn Read scanning on. A single-word allowlist entry suppresses any name pair containing it.
+- An organisation can push a locked policy (watchlist, allowlist, type states, custom types, Read scanning) through the `policyFile` option; see the repo README.
 - `/pii add <id> <regex>` adds a custom type; `/pii test <id|regex> <sample>` tries one; `/pii list` shows everything.
 - Ask Claude: "add a pattern for our internal ticket ids like REF-123456". It uses the `pii_patterns` tool to test the regex against samples and add it. The tool can only strengthen the guard: list, test, add a type, add a watchlist name, turn a type on. Turning types off, removing types, allowlisting and unwatching are yours alone through `/pii`, so a prompt injection cannot switch the guard off. The tool never returns watchlist or allowlist entries, only counts.
 
