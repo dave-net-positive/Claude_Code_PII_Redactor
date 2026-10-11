@@ -6,7 +6,7 @@ test('defaultConfig has every built-in enabled and the default allowlist', async
   const c = defaultConfig()
   expect(c.types.length).toBe(BUILTIN_TYPES.length)
   expect(c.scanToolReads).toBe(false)
-  expect(c.allowlist).toContain('claude code')
+  expect(c.allowlist).toContain('claude')
 })
 
 test('mergeBuiltins keeps stored toggles and custom types, adds new built-ins', async () => {

@@ -109,12 +109,32 @@ export const BUILTIN_TYPES: PiiType[] = [
   ]), caseSensitive: true },
 ]
 
+/**
+ * Never reported. A single word here also suppresses any heuristic name pair
+ * that contains it (so `microsoft` covers Microsoft Teams); pairs are for the
+ * few cases with no safe single word.
+ */
 export const DEFAULT_ALLOWLIST: string[] = [
-  'claude code', 'visual studio', 'visual studio code', 'new york', 'united kingdom',
-  'united states', 'pull request', 'stack overflow', 'hong kong', 'los angeles',
-  'san francisco', 'north america', 'south america', 'new zealand', 'south africa',
-  'machine learning', 'open source', 'microsoft teams', 'google docs', 'google drive',
-  'power apps', 'power automate', 'azure devops', 'github actions', 'docker compose',
-  'react native', 'type script', 'node js', 'spring boot', 'next js', 'tail wind',
+  // vendors and products
+  'microsoft', 'google', 'amazon', 'apple', 'meta', 'anthropic', 'claude', 'openai', 'cloudflare',
+  'github', 'gitlab', 'bitbucket', 'azure', 'aws', 'docker', 'kubernetes', 'linux', 'windows', 'ubuntu',
+  'python', 'typescript', 'javascript', 'node', 'react', 'angular', 'vue', 'svelte', 'django', 'flask',
+  'spring', 'rails', 'postgres', 'postgresql', 'mysql', 'mongodb', 'redis', 'neo4j', 'sqlite',
+  'visual', 'studio', 'code', 'teams', 'slack', 'discord', 'zoom', 'notion', 'jira', 'confluence',
+  'copilot', 'gemini', 'chatgpt', 'ollama', 'hugging', 'face', 'power', 'apps', 'automate', 'fabric',
+  'sharepoint', 'onedrive', 'outlook', 'excel', 'word', 'powerpoint', 'dynamics', 'intune', 'entra',
+  'terraform', 'ansible', 'jenkins', 'actions', 'workers', 'pages', 'lambda', 'vercel', 'netlify',
+  // programming words that get capitalised in prose
+  'pull', 'request', 'stack', 'overflow', 'machine', 'learning', 'open', 'source', 'api', 'sdk',
+  'cloud', 'server', 'client', 'service', 'platform', 'enterprise', 'premium', 'standard', 'basic',
+  // places
+  'new', 'york', 'united', 'kingdom', 'states', 'hong', 'kong', 'los', 'angeles', 'san', 'francisco',
+  'north', 'south', 'east', 'west', 'america', 'zealand', 'africa', 'europe', 'asia', 'london',
+  'manchester', 'birmingham', 'edinburgh', 'cardiff', 'belfast', 'dublin',
+  // calendar and common capitalised words
+  'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
+  'january', 'february', 'march', 'april', 'june', 'july', 'august', 'september', 'october',
+  'november', 'december',
+  // the author's own projects
   'uk biobank', 'net positive', 'dyson sphere',
 ].map(s => s.toLowerCase())

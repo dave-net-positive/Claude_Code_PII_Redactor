@@ -131,6 +131,8 @@ function collect(regex: RegExp, text: string, type: PiiType, section: string, ou
 export function scan(text: string, section: string, config: Config, opts: ScanOptions = {}): Finding[] {
   const body = text.length > MAX_SCAN ? text.slice(0, MAX_SCAN) : text
   const allow = new Set(config.allowlist.map(s => s.trim().toLowerCase()))
+  // Single-word entries also suppress any heuristic name pair that contains the word.
+  const allowWords = new Set([...allow].filter(s => s.length > 0 && !/\s/.test(s)))
   const skip = new Set(opts.sessionAllows ?? [])
   const raw: Finding[] = []
   for (const type of config.types) {
@@ -141,6 +143,7 @@ export function scan(text: string, section: string, config: Config, opts: ScanOp
       const re = compiled(src, type.caseSensitive === true)
       if (re) collect(re, body, type, section, hits)
     }
+    const heuristicCount = hits.length
     if (type.id === 'name') {
       for (const term of config.watchlist) {
         const trimmed = term.trim()
@@ -149,11 +152,14 @@ export function scan(text: string, section: string, config: Config, opts: ScanOp
         collect(re, body, type, section, hits)
       }
     }
-    for (const h of hits) {
-      if (!validator(h.value)) continue
-      if (allow.has(h.value.trim().toLowerCase())) continue
+    hits.forEach((h, i) => {
+      if (!validator(h.value)) return
+      const lower = h.value.trim().toLowerCase()
+      if (allow.has(lower)) return
+      const isHeuristicName = type.id === 'name' && i < heuristicCount
+      if (isHeuristicName && lower.split(/[\s-]+/).some(w => allowWords.has(w))) return
       raw.push(h)
-    }
+    })
   }
   raw.sort((a, b) => a.start - b.start || (b.end - b.start) - (a.end - a.start))
   const out: Finding[] = []

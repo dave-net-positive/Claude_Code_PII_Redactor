@@ -29,5 +29,5 @@ test('built-ins have unique ids, compile, and ship enabled', async () => {
     expect(t.source).toBe('builtin')
     for (const p of t.patterns) expect(() => new RegExp(p, 'giu')).not.toThrow()
   }
-  expect(DEFAULT_ALLOWLIST).toContain('claude code')
+  expect(DEFAULT_ALLOWLIST).toContain('claude')
 })

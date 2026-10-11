@@ -104,3 +104,20 @@ test('compilePattern rejects nested quantifiers written with braces or inner gro
   expect(compilePattern('(?: ?[A-Z0-9]{4}){2,7}').ok).toBe(true)
   expect(compilePattern('\\(\\d+\\)+').ok).toBe(true)
 })
+
+test('a single-word allowlist entry suppresses any heuristic name pair containing it', async () => {
+  const c = config({ allowlist: ['microsoft'] })
+  const text = 'We use Microsoft Teams and Microsoft Fabric; ask Jane Smith.'
+  expect(scan(text, 'prompt', c).map(f => f.value)).toEqual(['Jane Smith'])
+})
+
+test('word-level suppression never applies to watchlist hits or other types', async () => {
+  const c = config({ allowlist: ['smith', 'example'], watchlist: ['Jane Smith'] })
+  const text = 'Jane Smith wrote to dave@example.com'
+  expect(scan(text, 'prompt', c).map(f => f.typeId).sort()).toEqual(['email', 'name'])
+})
+
+test('the default allowlist covers common vendor pairs by word', async () => {
+  const text = 'Deployed on Cloudflare Workers with Google Cloud and Visual Studio Code'
+  expect(scan(text, 'prompt', config())).toEqual([])
+})
