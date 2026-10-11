@@ -89,7 +89,14 @@ function lintBacktracking(source: string): string | null {
   return null
 }
 
+/** A pattern may start with `(?i)` to be case-insensitive whatever its type's default. */
+const CASE_INSENSITIVE_PREFIX = '(?i)'
+
 export function compilePattern(source: string, flags: 'giu' | 'gu' = 'giu'): Compiled {
+  if (typeof source === 'string' && source.startsWith(CASE_INSENSITIVE_PREFIX)) {
+    source = source.slice(CASE_INSENSITIVE_PREFIX.length)
+    flags = 'giu'
+  }
   if (typeof source !== 'string' || source.length === 0) return { ok: false, reason: 'pattern is empty' }
   if (source.length > MAX_PATTERN) return { ok: false, reason: `pattern is longer than ${MAX_PATTERN} characters` }
   const lint = lintBacktracking(source)
@@ -118,6 +125,18 @@ function compiled(source: string, caseSensitive: boolean): RegExp | null {
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 export type ScanOptions = { sessionAllows?: readonly string[] }
+
+/** Words that never belong in a person's name; a heuristic name hit containing one is dropped. */
+const NAME_STOPWORDS = new Set([
+  'the', 'a', 'an', 'and', 'or', 'but', 'not', 'no', 'yes', 'is', 'are', 'was', 'were', 'be', 'been',
+  'very', 'much', 'more', 'most', 'also', 'still', 'now', 'then', 'here', 'there', 'this', 'that',
+  'these', 'those', 'what', 'which', 'who', 'whom', 'how', 'why', 'when', 'where', 'so', 'too',
+  'just', 'really', 'quite', 'going', 'being', 'important', 'secret', 'private', 'confidential',
+  'unknown', 'known', 'ready', 'later', 'today', 'tomorrow', 'yesterday', 'please', 'thanks',
+  'sorry', 'back', 'again', 'soon', 'about', 'with', 'from', 'into', 'onto', 'over', 'under',
+  'if', 'in', 'on', 'at', 'to', 'of', 'for', 'by', 'as', 'it', 'its', 'my', 'your', 'his', 'her',
+  'our', 'their', 'me', 'you', 'him', 'us', 'them', 'one', 'some', 'any', 'all', 'none', 'each',
+])
 
 function collect(regex: RegExp, text: string, type: PiiType, section: string, out: Finding[]) {
   regex.lastIndex = 0
@@ -157,7 +176,10 @@ export function scan(text: string, section: string, config: Config, opts: ScanOp
       const lower = h.value.trim().toLowerCase()
       if (allow.has(lower)) return
       const isHeuristicName = type.id === 'name' && i < heuristicCount
-      if (isHeuristicName && lower.split(/[\s-]+/).some(w => allowWords.has(w))) return
+      if (isHeuristicName) {
+        const words = lower.split(/[\s-]+/)
+        if (words.some(w => allowWords.has(w) || NAME_STOPWORDS.has(w))) return
+      }
       raw.push(h)
     })
   }

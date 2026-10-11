@@ -106,6 +106,9 @@ export const BUILTIN_TYPES: PiiType[] = [
   { ...t('name', 'Personal name', 'identity', 'NAME', [
     String.raw`\b(?:Mr|Mrs|Ms|Miss|Dr|Prof|Sir|Dame)\.? [A-Z][a-z]+(?: [A-Z][a-z]+)?\b`,
     String.raw`(?<![.!?]\s)(?<!^)\b[A-Z][a-z]{1,}(?:[-'][A-Z][a-z]+)? [A-Z][a-z]{1,}\b`,
+    // Any case, when a person is introduced: "my name is garry bellows". Exactly two words
+    // of two or more letters, so "my name is a secret" misses; detect.ts drops stopwords.
+    String.raw`(?i)(?<=\b(?:my|his|her|their|the customer's|the client's|the patient's) name(?: is|'s)\s+|\bi(?:'m| am) called\s+|\byou can call me\s+|\bcall me\s+)[a-z][a-z'’-]+\s+[a-z][a-z'’-]+\b`,
   ]), caseSensitive: true },
 ]
 

@@ -69,7 +69,7 @@ All start enabled. Turn off the ones a project tolerates.
 | Date of birth | a date near "DOB", "date of birth" or "born" |
 | API key or secret | AWS, GitHub, Slack, Anthropic, OpenAI, Google keys, JWTs, PEM private keys, `password=` style assignments |
 | Health terms | a short keyword list and ICD-10 codes |
-| Personal name | your watchlist, plus a capitalised-pair heuristic; a pair is ignored when any of its words is on the allowlist |
+| Personal name | your watchlist, a capitalised-pair heuristic, and any-case names introduced by a cue ("my name is garry bellows"); a pair is ignored when any of its words is on the allowlist |
 
 ## Configuration
 

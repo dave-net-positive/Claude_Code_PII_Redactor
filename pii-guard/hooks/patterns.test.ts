@@ -1,5 +1,6 @@
 import { test, expect } from 'claude-code/testing'
 import { VALIDATORS, BUILTIN_TYPES, DEFAULT_ALLOWLIST } from './patterns'
+import { compilePattern } from './detect'
 
 test('luhn accepts a valid card and rejects a bad check digit', async () => {
   expect(VALIDATORS.luhn('4111 1111 1111 1111')).toBe(true)
@@ -27,7 +28,7 @@ test('built-ins have unique ids, compile, and ship enabled', async () => {
   for (const t of BUILTIN_TYPES) {
     expect(t.enabled).toBe(true)
     expect(t.source).toBe('builtin')
-    for (const p of t.patterns) expect(() => new RegExp(p, 'giu')).not.toThrow()
+    for (const p of t.patterns) expect(compilePattern(p).ok).toBe(true)
   }
   expect(DEFAULT_ALLOWLIST).toContain('claude')
 })

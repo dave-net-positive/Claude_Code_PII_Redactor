@@ -122,3 +122,24 @@ test('the default allowlist covers common vendor pairs by word', async () => {
   const text = 'Deployed on Cloudflare Workers with Google Cloud and Visual Studio Code'
   expect(scan(text, 'prompt', config())).toEqual([])
 })
+
+test('a lowercase name introduced by a cue phrase is caught', async () => {
+  const text = 'my name is garry bellows. my email is gbellows@gmail.com. I like basketball.'
+  const found = scan(text, 'prompt', config())
+  expect(found.map(f => `${f.typeId}:${f.value}`)).toEqual(['name:garry bellows', 'email:gbellows@gmail.com'])
+  expect(scan("Hi, I'm called jo-anne o'neil today", 'prompt', config()).map(f => f.value)).toEqual(["jo-anne o'neil"])
+  expect(scan('her name is priya natarajan', 'prompt', config()).map(f => f.value)).toEqual(['priya natarajan'])
+})
+
+test('cue phrases followed by ordinary words are not names', async () => {
+  for (const text of ['thanks very much', 'the name is important here', 'this is the plan', 'my name is a secret', 'my name is not important', 'call me when ready']) {
+    expect(scan(text, 'prompt', config())).toEqual([])
+  }
+})
+
+test('a (?i) prefix makes one pattern case-insensitive inside a case-sensitive type', async () => {
+  const c = config()
+  c.types.push({ id: 'custom:cs', label: 'cs', category: 'custom', enabled: true, source: 'custom', patterns: ['\\bFoo\\b', '(?i)\\bbar\\b'], validator: 'none', placeholder: 'CS', caseSensitive: true })
+  expect(scan('foo Foo BAR bar', 'prompt', c).map(f => f.value)).toEqual(['Foo', 'BAR', 'bar'])
+  expect(compilePattern('(?i)abc').ok).toBe(true)
+})
