@@ -414,3 +414,18 @@ test('nothing allowed means nothing scrubbed; scrub can be turned off', async ($
   await ui.press({ key: 'send' })
   expect(ran).toBe(0)
 })
+
+test('cancelling a review scrubs every flagged value from the local log', async ($, on) => {
+  mock.store(on); const { log, submitted } = stub(on)
+  let argv: readonly string[] = []
+  on('process.run', ($, e) => { argv = e.argv; return { value: { exitCode: 0, stdout: '1', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } } })
+  on('env.get', ($, e) => ({ value: e.name === 'OS' ? 'Windows_NT' : undefined }))
+  on('classic.UserPromptSubmit', () => ({}))
+  await $.classic.UserPromptSubmit({ prompt: 'x', transcript_path: TRANSCRIPT, session_id: 's', cwd: 'E:/x' } as never)
+  expect(await $.prompt.submit(submit('mail a@b.co card 4111 1111 1111 1111'))).toEqual(HELD)
+  const ui = await mount($)
+  await ui.press({ key: 'cancel' })
+  expect(submitted).toEqual([])
+  expect(argv[0]).toBe('powershell')
+  expect(log.some(l => /toast:.*scrubbed 1/.test(l))).toBe(true)
+})

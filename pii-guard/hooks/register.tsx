@@ -249,9 +249,11 @@ async function sendReview($: EngineInterface, review: Review): Promise<void> {
   if (count) await scrubLocalLog($, config, distinctRedacted(review.findings, decisions))
 }
 
-async function cancelReview($: EngineInterface): Promise<void> {
+/** Cancel: the prompt is discarded, so every flagged value is scrubbed from the local log. */
+async function cancelReview($: EngineInterface, review: Review): Promise<void> {
   await advance($)
   $.ui.toast('Prompt cancelled in PII review')
+  await scrubLocalLog($, await loadConfig($), distinctRedacted(review.findings, {}))
 }
 
 function actionsFor($: EngineInterface): PaneActions {
@@ -269,7 +271,7 @@ function actionsFor($: EngineInterface): PaneActions {
   return {
     decide: (typeId, d: Decision) => void update($, reviewAtom, r => r ? { ...r, decisions: { ...r.decisions, [typeId]: d } } : r),
     send: () => withReview(r => sendReview($, r)),
-    cancel: () => withReview(() => cancelReview($)),
+    cancel: () => withReview(r => cancelReview($, r)),
     openSettings: () => void update($, settingsOpenAtom, () => true),
     closeSettings: () => void (async () => {
       await update($, settingsOpenAtom, () => false)
@@ -352,9 +354,12 @@ export const register: Register = (on, options) => {
     if (e.origin.kind === 'person') {
       const current = await read($, reviewAtom)
       if (current?.kind === 'prompt') {
+        const queued = await read($, queueAtom)
         await update($, queueAtom, () => [])
         await update($, reviewAtom, () => null)
         $.ui.toast('Prompt cancelled in PII review')
+        const flagged = [current, ...queued].flatMap(r => r.findings)
+        await scrubLocalLog($, await loadConfig($), distinctRedacted(flagged, {}))
       }
     }
     return next(e)
@@ -416,9 +421,9 @@ export const register: Register = (on, options) => {
         const answer = await $.ui.ask(`pii-guard: this prompt carries ${what}. What now?`, { options, header: 'PII guard' }).catch(() => 'Cancel')
         await update($, reviewAtom, () => null)
         await $.ui.close({ id: PANE_ID }).catch(() => undefined)
-        if (answer === 'Cancel') return { drop: 'Cancelled in PII review' }
         if (answer === 'Redact text and send') return redactEverything()
         if (answer === 'Send everything as-is' || answer === 'Send') return next(e)
+        await scrubLocalLog($, config, distinctRedacted(findings, {}))
         return { drop: 'Cancelled in PII review' }
       }
 
