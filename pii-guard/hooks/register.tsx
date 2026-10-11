@@ -229,6 +229,24 @@ function actionsFor($: EngineInterface): PaneActions {
     removeTerm: (list, term) => void edit((c, locks) => lockReason(locks, { kind: list, term }) ?? removeTermFrom(c, list, term)),
     setScanReads: on => void edit((c, locks) => lockReason(locks, { kind: 'scanToolReads' }) ?? { ...c, scanToolReads: on }),
     revokeSessionAllow: id => void update($, sessionAllowsAtom, l => l.filter(x => x !== id)),
+    allowlistValue: (typeId, value) => void allowlistAndTrim($, value, f => f.typeId === typeId && f.value.trim().toLowerCase() === value.trim().toLowerCase()),
+    allowlistWord: (typeId, word) => void allowlistAndTrim($, word, f =>
+      f.typeId === typeId && f.value.toLowerCase().split(/[\s-]+/).includes(word.toLowerCase())),
+  }
+}
+
+/** Adds `term` to the person's allowlist, drops matching findings from the review shown, and sends if nothing is left. */
+async function allowlistAndTrim($: EngineInterface, term: string, matches: (f: Finding) => boolean): Promise<void> {
+  const { user } = await loadEffective($)
+  await saveConfig($, addTermTo(user, 'allowlist', term))
+  const review = await read($, reviewAtom)
+  if (!review || review.kind !== 'prompt') return
+  const remaining = review.findings.filter(f => !matches(f))
+  const trimmed: Review = { ...review, findings: remaining }
+  await update($, reviewAtom, () => trimmed)
+  if (remaining.length === 0 && review.unscannable.length === 0) {
+    $.ui.toast(`pii-guard: "${term}" added to the allowlist; nothing left to review, prompt sent`)
+    await sendReview($, trimmed)
   }
 }
 
@@ -425,6 +443,6 @@ export const register: Register = (on, options) => {
     if (settingsOpen || !review) {
       return renderSettings(E, effective.config, allows, review !== null, actions, effective.locks, effective.policy)
     }
-    return renderReview(E, review, effective.config, actions, queue.length)
+    return renderReview(E, review, effective.config, actions, queue.length, e.props.bodyColumns)
   })
 }

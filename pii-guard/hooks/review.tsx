@@ -16,6 +16,10 @@ export type PaneActions = {
   removeTerm(list: 'watchlist' | 'allowlist', term: string): void
   setScanReads(on: boolean): void
   revokeSessionAllow(id: string): void
+  /** Add this exact value to the allowlist and drop it from the review shown. */
+  allowlistValue(typeId: string, value: string): void
+  /** Add one word to the allowlist (covers every name pair holding it) and drop those from the review. */
+  allowlistWord(typeId: string, word: string): void
 }
 
 /** The elements every surface has; `Input` is looked up separately where a surface draws one. */
@@ -116,33 +120,80 @@ function sectionBlock(E: PaneElements, section: ReviewSection, all: Finding[], c
   )
 }
 
-export function renderReview(E: PaneElements, review: Review, config: Config, actions: PaneActions, waiting = 0) {
+const MAX_VALUES = 10
+const TWO_COLUMNS_FROM = 120
+
+const CATEGORY_GLYPH: Record<string, string> = {
+  contact: '✉', identity: '🪪', financial: '▮', health: '✚', secret: '🔑', network: '⌁', custom: '◆',
+}
+
+/** Distinct values of one type in a review, in order of first appearance. */
+function distinctValues(review: Review, typeId: string): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const f of review.findings) {
+    if (f.typeId !== typeId) continue
+    const key = f.value.trim().toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(f.value.trim())
+  }
+  return out
+}
+
+export function renderReview(E: PaneElements, review: Review, config: Config, actions: PaneActions, waiting = 0, bodyColumns = 80) {
   const { Box, Text, Button } = E
   const order: string[] = []
   for (const f of review.findings) if (!order.includes(f.typeId)) order.push(f.typeId)
   const count = (id: string) => review.findings.filter(f => f.typeId === id).length
   const current = (id: string): Decision => review.decisions[id] ?? 'redact'
   const redactions = order.reduce((n, id) => n + (current(id) === 'redact' ? count(id) : 0), 0)
-  const label = (id: string) => config.types.find(t => t.id === id)?.label ?? id
+  const typeOf = (id: string) => config.types.find(t => t.id === id)
+  const label = (id: string) => typeOf(id)?.label ?? id
+  const category = (id: string) => typeOf(id)?.category ?? 'custom'
   const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
-  return (
-    <Box flexDirection="column" padding={1}>
-      <Text bold color="warning">
-        {`PII review: ${plural(review.findings.length, 'finding')} in ${plural(review.sections.length, 'section')}`}
-        {review.unscannable.length ? `, ${plural(review.unscannable.length, 'attachment')} cannot be scanned` : ''}
-      </Text>
-      <Text dimColor>
-        {review.kind === 'tool' ? 'A Read result is held until you answer the dialog.' : 'The prompt is held until you decide. Escape cancels.'}
-        {waiting > 0 ? ` ${plural(waiting, 'more prompt')} waiting.` : ''}
-      </Text>
-      <Box flexDirection="column" marginTop={1}>
-        {review.sections.map(s => sectionBlock(E, s, review.findings, config))}
-      </Box>
-      {order.length > 0 ? <Text bold>Detected types</Text> : null}
-      {order.map(id => (
+  const twoColumns = bodyColumns >= TWO_COLUMNS_FROM && order.length > 1
+
+  const card = (id: string) => {
+    const color = CATEGORY_COLOR[category(id)]
+    const values = distinctValues(review, id)
+    const shown = values.slice(0, MAX_VALUES)
+    return (
+      <Box
+        key={`card:${id}`}
+        flexDirection="column"
+        borderStyle="round"
+        borderColor={color}
+        paddingX={1}
+        marginBottom={1}
+        marginRight={twoColumns ? 1 : 0}
+        width={twoColumns ? '49%' : undefined}
+      >
         <Box gap={1}>
-          <Text bold>{label(id)}</Text>
-          <Text dimColor>{`×${count(id)}`}</Text>
+          <Text color={color} bold>{`${CATEGORY_GLYPH[category(id)] ?? '◆'} ${label(id)}`}</Text>
+          <Text dimColor>{`· ${category(id)} · ×${count(id)}`}</Text>
+        </Box>
+        {shown.map((value, i) => {
+          const words = id === 'name' ? value.split(/[\s-]+/).filter(w => w.length > 1) : []
+          return (
+            <Box key={`value:${id}:${i}`} gap={1} flexWrap="wrap">
+              <Text color={color}>{value}</Text>
+              <Button key={`allow:${id}:${i}`} label="Allowlist" plain onPress={() => actions.allowlistValue(id, value)} />
+              {words.length > 1
+                ? words.map(w => (
+                    <Button
+                      key={`allowword:${id}:${i}:${w.toLowerCase()}`}
+                      label={`Allowlist "${w}"`}
+                      plain
+                      onPress={() => actions.allowlistWord(id, w)}
+                    />
+                  ))
+                : null}
+            </Box>
+          )
+        })}
+        {values.length > MAX_VALUES ? <Text dimColor>{`+${values.length - MAX_VALUES} more`}</Text> : null}
+        <Box gap={1} marginTop={1}>
           {DECISIONS.map(d => (
             <Button
               key={`decide:${id}:${d}`}
@@ -151,16 +202,38 @@ export function renderReview(E: PaneElements, review: Review, config: Config, ac
             />
           ))}
         </Box>
-      ))}
+      </Box>
+    )
+  }
+
+  return (
+    <Box flexDirection="column" paddingX={1}>
+      <Box gap={1}>
+        <Text bold color="warning">🛡 PII review</Text>
+        <Text dimColor>
+          {`${plural(review.findings.length, 'finding')} · ${plural(review.sections.length, 'section')}`}
+          {review.unscannable.length ? ` · ${plural(review.unscannable.length, 'attachment')} cannot be scanned` : ''}
+          {waiting > 0 ? ` · ${plural(waiting, 'more prompt')} waiting` : ''}
+        </Text>
+      </Box>
+      <Text dimColor>
+        {review.kind === 'tool' ? 'A Read result is held until you answer the dialog.' : 'Held until you decide. Redact is the default; Escape cancels.'}
+      </Text>
+      <Box flexDirection="column" marginTop={1}>
+        {review.sections.map(s => sectionBlock(E, s, review.findings, config))}
+      </Box>
+      <Box flexDirection={twoColumns ? 'row' : 'column'} flexWrap={twoColumns ? 'wrap' : 'nowrap'}>
+        {order.map(card)}
+      </Box>
       {review.unscannable.length > 0 ? (
-        <Box flexDirection="column" marginTop={1}>
+        <Box flexDirection="column" borderStyle="round" borderColor="subtle" paddingX={1} marginBottom={1}>
           <Text bold>Cannot be scanned</Text>
           {review.unscannable.map(u => (
-            <Text>{`• ${u.filename ?? '(unnamed)'} (${u.mediaType ?? u.type}): Send will include it as-is`}</Text>
+            <Text>{`• ${u.filename ?? '(unnamed)'} (${u.mediaType ?? u.type}): sent as-is`}</Text>
           ))}
         </Box>
       ) : null}
-      <Box gap={2} marginTop={1}>
+      <Box gap={2}>
         {review.kind === 'prompt'
           ? <Button key="send" hotkey="s" label={redactions ? `Send with ${plural(redactions, 'redaction')}` : 'Send'} onPress={() => actions.send()} />
           : null}

@@ -63,7 +63,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     mock.store(on); const { submitted } = stub(on)
     expect(await $.prompt.submit(submit('mail a@b.co card 4111 1111 1111 1111'))).toEqual(HELD)
     const ui = await mount($, surface)
-    expect(await ui.find({ text: /2 findings in 1 section/ })).toBeTruthy()
+    expect(await ui.find({ text: /2 findings · 1 section/ })).toBeTruthy()
     expect(await ui.find({ key: 'decide:card:allow-session' })).toBeTruthy()
     expect((await ui.find({ key: 'send' }))?.props.label).toBe('Send with 2 redactions')
     const highlighted = await ui.findAll({ type: 'Text', text: 'a@b.co' })
@@ -160,7 +160,7 @@ test('mentioned file is scanned, shown, and sent redacted inside the resubmitted
   expect(await $.prompt.submit(submit('summarise @notes.md please'))).toEqual(HELD)
   const ui = await mount($)
   expect(await ui.find({ text: /@notes\.md/ })).toBeTruthy()
-  expect(await ui.find({ text: /1 finding in 2 sections/ })).toBeTruthy()
+  expect(await ui.find({ text: /1 finding · 2 sections/ })).toBeTruthy()
   await ui.press({ key: 'send' })
   const text = submitted[0]!.text
   expect(text.startsWith('summarise @notes.md please')).toBe(true)
@@ -316,4 +316,36 @@ test('a missing policy path leaves the user config alone', { options: { policyFi
   mock.store(on); const { log } = stub(on)
   expect(await $.prompt.submit(submit('nightjar'))).toEqual({ text: 'nightjar' })
   expect(log.filter(l => l.startsWith('toast:pii-guard: policy')).length).toBe(1)
+})
+
+test('Allowlist buttons drop values from the review and send when nothing is left', async ($, on) => {
+  mock.store(on); const { submitted, log } = stub(on)
+  expect(await $.prompt.submit(submit('mail a@b.co and tell Nightjar Holdings about card 4111 1111 1111 1111'))).toEqual(HELD)
+  const ui = await mount($)
+  expect(await ui.find({ text: /3 findings/ })).toBeTruthy()
+  // one button per distinct value, plus one per word of a name pair
+  expect(await ui.find({ key: 'allow:email:0' })).toBeTruthy()
+  expect(await ui.find({ key: 'allowword:name:0:nightjar' })).toBeTruthy()
+  await ui.press({ key: 'allow:email:0' })
+  expect(await ui.find({ text: /2 findings/ })).toBeTruthy()
+  expect(await ui.find({ key: 'decide:email:redact' })).toBeFalsy()
+  await ui.press({ key: 'allowword:name:0:nightjar' })
+  expect(await ui.find({ text: /1 finding\b/ })).toBeTruthy()
+  await ui.press({ key: 'allow:card:0' })
+  // nothing left: the prompt went as typed
+  expect(submitted.map(s => s.text)).toEqual(['mail a@b.co and tell Nightjar Holdings about card 4111 1111 1111 1111'])
+  expect(log.some(l => /toast:.*allowlist.*sent/i.test(l))).toBe(true)
+  // and the allowlist now holds all three
+  const r = await $.command.run({ command: 'pii', args: 'list', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } })
+  expect(r.text).toMatch(/allowlist: \d+/)
+  expect(await $.prompt.submit(submit('a@b.co from Nightjar Group, card 4111 1111 1111 1111'))).toEqual({ text: 'a@b.co from Nightjar Group, card 4111 1111 1111 1111' })
+})
+
+test('the review draws a bordered card per type in the category colour', async ($, on) => {
+  mock.store(on); stub(on)
+  expect(await $.prompt.submit(submit('mail a@b.co'))).toEqual(HELD)
+  const ui = await mount($)
+  const card = await ui.find({ key: 'card:email' })
+  expect(card?.props.borderStyle).toBeTruthy()
+  expect(card?.props.borderColor).toBe('suggestion')
 })
