@@ -98,18 +98,3 @@ export type Review = {
   decisions: Record<string, Decision>
   view: 'review' | 'settings'
 }
-
-declare module 'claude-code' {
-  interface PluginState {
-    'pii-guard': {
-      review: Review | null
-      /** Prompts held behind the one shown, oldest first. */
-      queue: Review[]
-      sessionAllows: string[]
-      settingsOpen: boolean
-      configVersion: number
-      /** The gate is paused for this session only. */
-      paused: boolean
-    }
-  }
-}

@@ -1,4 +1,3 @@
-import { atom, read, update } from 'claude-code'
 import type { Register, EngineInterface } from 'claude-code'
 import type { Config, Decision, Finding, Locks, Policy, PolicyStatus, Review, ReviewSection, Unscannable } from '../types'
 import {
@@ -14,14 +13,32 @@ import { TOOL_SPEC, runPatternsTool } from './tool'
 import { paneElements, renderReview, renderSettings } from './review'
 import type { PaneActions } from './review'
 
-// State refs and atoms must be literals in this file so the engine can list them.
 const PANE_ID = 'pii-guard'
-const configVersion = { plugin: 'pii-guard', key: 'configVersion' } as const
-const reviewAtom = atom({ plugin: 'pii-guard', key: 'review' } as const, null as Review | null)
-const queueAtom = atom({ plugin: 'pii-guard', key: 'queue' } as const, [] as Review[])
-const sessionAllowsAtom = atom({ plugin: 'pii-guard', key: 'sessionAllows' } as const, [] as string[])
-const settingsOpenAtom = atom({ plugin: 'pii-guard', key: 'settingsOpen' } as const, false)
-const pausedAtom = atom({ plugin: 'pii-guard', key: 'paused' } as const, false)
+
+// Session state lives in this module, not in `$.state`: the claude.ai organisation marketplace
+// sync strips the manifest's `types` key, and without that contract the engine refuses every
+// `$.state` key. A hot reload of this module therefore loses an in-flight review, which only
+// matters while developing. Every change asks the pane to redraw.
+type Slot<T> = { value: T }
+const reviewAtom: Slot<Review | null> = { value: null }
+const queueAtom: Slot<Review[]> = { value: [] }
+const sessionAllowsAtom: Slot<string[]> = { value: [] }
+const settingsOpenAtom: Slot<boolean> = { value: false }
+const pausedAtom: Slot<boolean> = { value: false }
+
+async function read<T>(_$: EngineInterface, slot: Slot<T>): Promise<T> {
+  return slot.value
+}
+
+async function update<T>($: EngineInterface, slot: Slot<T>, fn: (value: T) => T): Promise<void> {
+  slot.value = fn(slot.value)
+  redraw($)
+}
+
+/** Asks the engine to redraw the pane; harmless when it is not open or the host has no pane. */
+function redraw($: EngineInterface): void {
+  try { $.ui.invalidate('ui.render') } catch { /* no pane to redraw */ }
+}
 
 const PLACEHOLDER_NOTE =
   'pii-guard: bracketed placeholders such as [EMAIL_1] or [CARD_2] stand for values the person chose to redact. ' +
@@ -139,8 +156,7 @@ async function loadConfig($: EngineInterface): Promise<Config> {
 
 async function saveConfig($: EngineInterface, config: Config): Promise<void> {
   await $.store.set(STORE_KEY, config)
-  const { value = 0 } = await $.state.get(configVersion)
-  await $.state.set(configVersion, value + 1)
+  redraw($)
 }
 
 /** Set once anything was redacted this session: the model then gets a standing note about placeholders. */
@@ -600,8 +616,6 @@ export const register: Register = (on, options) => {
     const [review, queue, allows, settingsOpen, effective, paused] = await Promise.all([
       read($, reviewAtom), read($, queueAtom), read($, sessionAllowsAtom), read($, settingsOpenAtom), loadEffective($), read($, pausedAtom),
     ])
-    // Subscribes this drawing to config saves, which bump configVersion.
-    await $.state.get(configVersion)
     const actions = actionsFor($)
     if (settingsOpen || !review) {
       return renderSettings(E, effective.config, allows, review !== null, actions, effective.locks, effective.policy, paused)

@@ -2,6 +2,11 @@
 
 All notable changes to pii-guard. Versions are git tags on `main`.
 
+## 1.4.1 — 2026-10-11
+
+- Session state moved out of `$.state` into the hooks module, with redraws through `$.ui.invalidate`. The manifest no longer needs a `types` contract, so the copy the claude.ai organisation marketplace sync produces (which strips that key) now loads. A hot reload while a review is open drops that review.
+- The mod README carries the install line.
+
 ## 1.4.0 — 2026-10-11
 
 - Policy can force the gate on (`enabled`), lock the log scrub and the name dictionary, and freeze whole lists (`lists.watchlist` / `lists.allowlist`: `locked`).

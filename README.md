@@ -179,6 +179,8 @@ npx -y -p typescript@5.6 tsc -p pii-guard
 claude plugin test pii-guard
 ```
 
+Session state (the held review, its queue, session allows, the pause switch) lives in module variables rather than `$.state`, because the claude.ai organisation marketplace sync strips the manifest `types` key that a `$.state` contract needs. The one cost is that a hot reload of the hooks module while a review is open drops that review; resubmit the prompt.
+
 ## Uninstall
 
 ```

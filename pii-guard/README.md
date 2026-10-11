@@ -2,6 +2,12 @@
 
 A Claude Code mod that holds prompts containing PII or secrets behind a review pane before they reach the model.
 
+Install on Claude Code 2.1.295 or later:
+
+```
+/plugin install pii-guard --marketplace dave-net-positive/Claude_Code_PII_Redactor
+```
+
 ## What it scans
 
 - The prompt as typed, pastes included.

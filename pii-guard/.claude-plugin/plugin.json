@@ -1,13 +1,12 @@
 {
   "name": "pii-guard",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Holds prompts, @file contents and Read results that contain PII or secrets behind a review pane with per-type allow/redact decisions.",
   "author": {
     "name": "dave-net-positive",
     "email": "dave@net-positive.uk"
   },
   "license": "MIT",
-  "types": "./types/index.d.ts",
   "userConfig": {
     "policyFile": {
       "type": "string",

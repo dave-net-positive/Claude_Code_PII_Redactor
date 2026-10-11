@@ -58,7 +58,8 @@ From the mod API types shipped with this build:
   `hotkey`), `Input`, `Select`, `Code`, `Markdown`. Mobile lacks `Input` and
   `Select`.
 - `$.store` is a per-plugin JSON key-value store kept across sessions.
-  `$.state` holds session values that survive hot reload and drive redraws.
+  `$.state` holds session values that survive hot reload and drive redraws
+  (not used since v1.4.1, see below).
 - `$.ui.ask` rejects in a `claude -p` run: there is nobody to ask.
 
 ## Files
@@ -126,7 +127,9 @@ type Review = {
 }
 ```
 
-Session state (`$.state`, declared in `types/index.d.ts` under `pii-guard`):
+Session state (v1.0 to v1.4.0: `$.state`, declared in `types/index.d.ts`
+under `pii-guard`; from v1.4.1: module variables in `register.tsx`, each
+write followed by `$.ui.invalidate('ui.render')`):
 
 - `review: Review | null` — the review currently shown, or none.
 - `sessionAllows: string[]` — type ids allowed for the rest of the session.
@@ -518,6 +521,18 @@ disable|enable`, settings buttons, and `$.ui.status` while off. The gate,
 the Read gate and the attachment rescan all pass through while inactive. A
 policy `enabled: true` overrides a user disable and hides both switches:
 organisation enforcement always wins.
+
+### State without a contract (v1.4.1)
+
+The claude.ai organisation marketplace sync validates `plugin.json` against
+the plugin SDK schema and strips unknown top-level keys, `types` included.
+The engine reads a mod's state contract from that key alone, so the synced
+copy failed the hooks-module validator on every `$.state` key. v1.4.1 keeps
+the five session values (review, queue, sessionAllows, settingsOpen,
+paused) in module scope behind the same `read`/`update` shape, and every
+`update` and config save calls `$.ui.invalidate('ui.render')` so the pane
+redraws. `PluginState` and the `types` key are gone. Cost: a hot reload of
+the module while a review is open drops that review (development only).
 
 ### Local-model tier (planned, not scheduled)
 
